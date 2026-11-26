@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CrickCoach</title>
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="ball" aria-hidden="true"></span>
+      <div>
+        <p class="name">CrickCoach</p>
+        <p class="tag">Net coach</p>
+      </div>
+    </div>
+    <nav>
+      <button type="button" data-view="lane" class="on">Lane</button>
+      <button type="button" data-view="sessions">Sessions</button>
+      <button type="button" data-view="machine">Machine</button>
+    </nav>
+    <p id="status">Ready</p>
+  </header>
+
+  <section id="view-lane" class="view">
+    <div class="stage-wrap">
+      <video id="live-video" playsinline muted></video>
+      <canvas id="stage" width="960" height="540"></canvas>
+      <p id="stage-caption" class="caption">Side-on for bowling. Front-on for batting.</p>
+    </div>
+    <aside class="cues-panel">
+      <div class="panel-head">
+        <h2>This ball</h2>
+        <div class="switch" id="role-switch">
+          <button type="button" data-role="bowling" class="on">Bowling</button>
+          <button type="button" data-role="batting">Batting</button>
+        </div>
+      </div>
+      <div id="cues" class="cues">
+        <p class="empty">Start the camera, or load a sample action.</p>
+      </div>
+    </aside>
+    <form id="lane-controls" class="controls">
+      <label>Player
+        <input id="player-name" name="player" value="Net session" autocomplete="off">
+      </label>
+      <label>Person in frame
+        <select id="person">
+          <option value="largest">Largest</option>
+          <option value="left">Left</option>
+          <option value="right">Right</option>
+        </select>
+      </label>
+      <label>Camera
+        <select id="devices"><option value="">Default camera</option></select>
+      </label>
+      <div class="buttons">
+        <button type="button" id="start-camera">Start camera</button>
+        <button type="button" id="stop-camera" disabled>Stop</button>
+        <button type="button" id="save-ball" disabled>Save this ball</button>
+        <button type="button" id="sample-clean">Sample action</button>
+        <button type="button" id="sample-faults">Sample faults</button>
+      </div>
+    </form>
+  </section>
+
+  <section id="view-sessions" class="view" hidden>
+    <div class="session-tools">
+      <form id="upload-form">
+        <h2>Upload a net video</h2>
+        <label>Name <input name="name" value="Net session" required></label>
+        <label>Role
+          <select name="role">
+            <option value="bowling">Bowling</option>
+            <option value="batting">Batting</option>
+          </select>
+        </label>
+        <label>Side camera <input name="side" type="file" accept="video/*" required></label>
+        <label>Behind the bowler <input name="behind" type="file" accept="video/*"></label>
+        <button type="submit">Cut into deliveries</button>
+      </form>
+      <form id="camera-form">
+        <h2>Record from CCTV</h2>
+        <label>Name <input name="name" value="Camera take"></label>
+        <label>Role
+          <select name="role">
+            <option value="bowling">Bowling</option>
+            <option value="batting">Batting</option>
+          </select>
+        </label>
+        <label>Side camera rtsp:// <input name="side_url" placeholder="rtsp://192.168.1.20/stream" required></label>
+        <label>Behind the bowler <input name="behind_url" placeholder="optional"></label>
+        <label>Seconds <input name="seconds" type="number" min="3" max="90" value="20"></label>
+        <button type="submit">Record</button>
+      </form>
+      <button type="button" id="demo-session" class="ghost">Load a sample clip</button>
+      <div id="session-list" class="session-list"></div>
+    </div>
+    <div id="review" class="review">
+      <p class="empty">Upload a side-on video, record the cameras, or load the sample clip.</p>
+    </div>
+  </section>
+
+  <section id="view-machine" class="view" hidden>
+    <form id="machine-form" class="machine-form">
+      <h2>Queue a ball</h2>
+      <p class="hint">The queue is the contract for a programmable bowling machine. CrickCoach stores each ball. It does not drive the wheels yet.</p>
+      <label>Pace km/h <input name="pace_kph" type="number" min="40" max="180" step="1" placeholder="125"></label>
+      <label>Line
+        <select name="line">
+          <option>wide off</option>
+          <option selected>off</option>
+          <option>middle</option>
+          <option>leg</option>
+          <option>wide leg</option>
+        </select>
+      </label>
+      <label>Length
+        <select name="length">
+          <option>yorker</option>
+          <option>full</option>
+          <option selected>good</option>
+          <option>short</option>
+          <option>bouncer</option>
+        </select>
+      </label>
+      <label>Note <input name="note" maxlength="200" placeholder="Block and leave"></label>
+      <button type="submit">Add to the queue</button>
+    </form>
+    <div>
+      <h2>Waiting</h2>
+      <div id="machine-list" class="machine-list"></div>
+    </div>
+  </section>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>
