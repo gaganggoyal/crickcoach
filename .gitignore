@@ -1,7 +1,10 @@
-.venv/
 __pycache__/
-*.pyc
 .DS_Store
-data/sessions/
-data/machine/
+.venv/
+*.pyc
 *.tmp
+data/lane.json
+data/machine/
+data/secret.key
+data/sessions/
+deploy/vps.local.env

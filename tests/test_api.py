@@ -1,14 +1,29 @@
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
 from crickcoach.app import create_app
-from crickcoach.video import synthesize_two_deliveries
+from crickcoach.footage import clip
 
 
-class ApiTests(unittest.TestCase):
+def wait_ready(client: TestClient, session_id: str, timeout: float = 120.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        session = client.get(f"/api/sessions/{session_id}").json()
+        if session["status"] in {"ready", "error"} and not session.get("job"):
+            return session
+        time.sleep(0.2)
+    raise AssertionError("the session never finished")
+
+
+class OpenLaneTests(unittest.TestCase):
+    """No coach key: the way VANSH runs on a laptop at the nets."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.client = TestClient(create_app(Path(self.tmp.name)))
@@ -26,113 +41,173 @@ class ApiTests(unittest.TestCase):
         response = self.client.post("/api/live/cues", json={"role": "wicketkeeper", "frames": []})
         self.assertEqual(response.status_code, 400)
 
-    def test_demo_clip_splits_into_two_deliveries(self):
-        response = self.client.post("/api/demo/session")
-        self.assertEqual(response.status_code, 200)
-        session = response.json()
-        self.assertEqual(session["status"], "ready", session.get("error"))
-        self.assertEqual(len(session["deliveries"]), 2)
-        media = self.client.get(f"/api/sessions/{session['id']}/media/side")
-        self.assertEqual(media.status_code, 200)
-        self.assertGreater(len(media.content), 500)
-
-    def test_upload_marks_pitch_pace_and_queues_the_machine(self):
-        folder = Path(self.tmp.name) / "clip"
-        folder.mkdir()
-        clip = folder / "net.mp4"
-        synthesize_two_deliveries(clip)
-        with clip.open("rb") as handle:
-            response = self.client.post(
-                "/api/sessions",
-                data={"name": "Tuesday", "role": "bowling"},
-                files={"side": ("net.mp4", handle, "video/mp4")},
-            )
-        self.assertEqual(response.status_code, 200)
-        session = response.json()
-        self.assertEqual(session["name"], "Tuesday")
-        delivery = session["deliveries"][0]
-        marked = self.client.post(
-            f"/api/sessions/{session['id']}/deliveries/{delivery['id']}/pitch",
-            json={"x": 0.3, "y": 0.55},
-        )
-        self.assertEqual(marked.json()["pitch"]["text"], "good on off")
-        paced = self.client.post(
-            f"/api/sessions/{session['id']}/deliveries/{delivery['id']}/pace",
-            json={"pace_kph": 128},
-        )
-        self.assertEqual(paced.json()["pace_kph"], 128)
-        queued = self.client.post(
-            "/api/machine",
-            json={"pace_kph": 128, "line": "off", "length": "good", "session_id": session["id"]},
-        )
-        self.assertEqual(queued.status_code, 200)
-        listed = self.client.get("/api/machine")
-        self.assertEqual(len(listed.json()["items"]), 1)
-        removed = self.client.delete(f"/api/machine/{queued.json()['id']}")
-        self.assertEqual(removed.status_code, 200)
-        self.assertEqual(self.client.get("/api/machine").json()["items"], [])
-
-    def test_camera_url_must_be_rtsp(self):
-        response = self.client.post(
-            "/api/cameras",
-            json={"side_url": "file:///etc/passwd", "seconds": 5},
-        )
-        self.assertEqual(response.status_code, 400)
-
-    def test_snapshot_is_saved_in_the_log(self):
-        sample = self.client.get("/api/samples/batting-clean").json()
-        saved = self.client.post(
-            "/api/snapshots",
-            json={"name": "Open stance", "role": "batting", "frames": sample["frames"]},
-        )
-        self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["deliveries"][0]["cues"][0]["severity"], "good")
-        listing = self.client.get("/api/sessions")
-        self.assertEqual(listing.json()["sessions"][0]["name"], "Open stance")
-
-    def test_tracked_sample_fills_length_and_pace(self):
-        response = self.client.post("/api/demo/tracked")
-        self.assertEqual(response.status_code, 200, response.text)
-        session = response.json()
+    def test_a_ball_is_tracked_marked_and_drilled(self):
+        session = wait_ready(self.client, self.client.post("/api/demo/tracked").json()["id"])
         self.assertEqual(session["status"], "ready", session.get("error"))
         delivery = session["deliveries"][0]
         self.assertEqual(delivery["pitch"]["length"], "good")
-        self.assertGreater(delivery["pace_kph"], 40)
-        self.assertLess(delivery["pace_kph"], 180)
-        self.assertEqual(delivery["tracking"]["confidence"] in {"ok", "low"}, True)
-
-    def test_track_asks_for_a_calibration(self):
-        session = self.client.post("/api/demo/session").json()
-        response = self.client.post(f"/api/sessions/{session['id']}/deliveries/d1/track")
-        self.assertEqual(response.status_code, 400)
-
-    def test_drill_and_bowl(self):
-        session = self.client.post("/api/demo/tracked").json()
-        marked = self.client.post(
-            f"/api/sessions/{session['id']}/deliveries/d1/pitch",
-            json={"x": 0.7, "y": 0.75},
-        )
-        self.assertEqual(marked.json()["pitch"]["length"], "full")
-        outcome = self.client.post(
-            f"/api/sessions/{session['id']}/deliveries/d1/outcome",
-            json={"outcome": "missed"},
-        )
-        self.assertEqual(outcome.status_code, 200)
-        drill = self.client.post("/api/drill", json={"session_id": session["id"], "count": 6})
-        self.assertEqual(drill.status_code, 200)
-        self.assertEqual(len(drill.json()["items"]), 6)
-        self.assertIn("full", drill.json()["reason"])
-        bowled = self.client.post("/api/machine/bowl")
-        self.assertEqual(bowled.status_code, 200)
-        self.assertEqual(bowled.json()["via"], "simulator")
+        self.assertEqual(delivery["pitch_source"], "cameras")
+        self.assertGreater(delivery["pace_kph"], 100)
+        base = f"/api/sessions/{session['id']}/deliveries/{delivery['id']}"
+        marked = self.client.post(f"{base}/pitch", json={"length_m": 1.2, "offset_m": 0.0}).json()
+        self.assertEqual(marked["pitch"]["length"], "yorker")
+        self.assertEqual(marked["pitch_source"], "manual")
+        # Tracking again keeps the coach's mark.
+        again = self.client.post(f"{base}/track?camera=side").json()
+        self.assertEqual(again["pitch"]["length"], "yorker")
+        cleared = self.client.post(f"{base}/pitch", json={"clear": True}).json()
+        self.assertEqual(cleared["pitch"]["length"], "good")
+        self.client.post(f"{base}/pitch", json={"length_m": 1.2, "offset_m": 0.0})
+        self.assertEqual(self.client.post(f"{base}/outcome", json={"outcome": "bowled"}).status_code, 200)
+        self.assertEqual(self.client.post(f"{base}/outcome", json={"outcome": "hit"}).json()["outcome"], "bowled")
+        drill = self.client.post("/api/drill", json={"session_id": session["id"], "count": 4}).json()
+        self.assertEqual(len(drill["items"]), 4)
+        self.assertEqual(drill["items"][0]["length"], "yorker")
+        self.assertEqual(drill["items"][0]["length_m"], 1.0)
+        bowled = self.client.post("/api/machine/bowl").json()
+        self.assertEqual(bowled["via"], "simulator")
         machine = self.client.get("/api/machine").json()
-        self.assertEqual(len(machine["items"]), 5)
+        self.assertEqual(len(machine["items"]), 3)
         self.assertEqual(len(machine["bowled"]), 1)
 
-    def test_radar_reading_is_stored(self):
-        saved = self.client.post("/api/radar", json={"pace_kph": 141})
-        self.assertEqual(saved.json()["pace_kph"], 141)
-        self.assertEqual(self.client.get("/api/radar").json()["pace_kph"], 141)
+    def test_pace_from_the_coach_and_the_radar(self):
+        session = wait_ready(self.client, self.client.post("/api/demo/tracked").json()["id"])
+        base = f"/api/sessions/{session['id']}/deliveries/d1"
+        self.assertEqual(self.client.post(f"{base}/pace", json={"pace_kph": 30}).status_code, 400)
+        self.assertEqual(self.client.post(f"{base}/pace", json={"pace_kph": 141}).json()["pace_source"], "manual")
+        self.client.post("/api/radar", json={"pace_kph": 139})
+        self.assertEqual(self.client.get("/api/radar").json()["pace_kph"], 139)
+        radar = self.client.post(f"{base}/pace", json={"pace_kph": 139, "source": "radar"}).json()
+        self.assertEqual(radar["pace_source"], "radar")
+        back = self.client.post(f"{base}/pace", json={"pace_kph": None}).json()
+        self.assertEqual(back["pace_source"], "side")
+
+    def test_calibration_checks_the_clicks_and_is_kept_for_the_lane(self):
+        session = wait_ready(self.client, self.client.post("/api/demo/tracked").json()["id"])
+        bad = {"kind": "side", "bowler_base": {"x": 0.1, "y": 0.5}, "bowler_top": {"x": 0.1, "y": 0.5},
+               "batter_base": {"x": 0.1, "y": 0.5}, "batter_top": {"x": 0.1, "y": 0.5}}
+        self.assertEqual(self.client.post(f"/api/sessions/{session['id']}/calibration/side", json=bad).status_code, 400)
+        good = {**clip("side_good_length")["calibration"], "distance_m": 12.5}
+        saved = self.client.post(f"/api/sessions/{session['id']}/calibration/side", json=good)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        lane = self.client.get("/api/lane").json()
+        self.assertEqual(lane["side"]["distance_m"], 12.5)
+        snapshot = self.client.post("/api/snapshots", json={
+            "name": "Next net", "role": "batting", "frames": self.client.get("/api/samples/batting-clean").json()["frames"],
+        }).json()
+        self.assertEqual(snapshot["calibration"]["side"]["distance_m"], 12.5)
+
+    def test_a_left_hander_renames_the_line(self):
+        session = wait_ready(self.client, self.client.post("/api/demo/behind").json()["id"])
+        self.assertEqual(session["deliveries"][0]["pitch"]["line"], "outside off")
+        flipped = self.client.patch(f"/api/sessions/{session['id']}", json={"batter": "left"}).json()
+        self.assertEqual(flipped["deliveries"][0]["pitch"]["line"], "down leg")
+
+    def test_the_coach_can_mark_and_remove_a_ball(self):
+        session = wait_ready(self.client, self.client.post("/api/demo/tracked").json()["id"])
+        added = self.client.post(f"/api/sessions/{session['id']}/deliveries", json={"t0": 0.2, "t1": 2.0}).json()
+        self.assertEqual(added["cut_note"], "Marked by the coach.")
+        self.assertEqual(self.client.post(f"/api/sessions/{session['id']}/deliveries", json={"t0": 2, "t1": 1}).status_code, 400)
+        removed = self.client.delete(f"/api/sessions/{session['id']}/deliveries/{added['id']}").json()
+        self.assertEqual(len(removed["deliveries"]), 1)
+
+    def test_a_restart_frees_a_session_that_was_mid_job(self):
+        session = wait_ready(self.client, self.client.post("/api/demo/tracked").json()["id"])
+        store = self.client.app.state.store
+        store.update(session["id"], lambda s: s.update(status="processing", job={"kind": "find", "progress": 0.4}))
+        TestClient(create_app(Path(self.tmp.name)))
+        recovered = self.client.get(f"/api/sessions/{session['id']}").json()
+        self.assertEqual(recovered["status"], "error")
+        self.assertIsNone(recovered["job"])
+        self.assertEqual(self.client.post(f"/api/sessions/{session['id']}/find").status_code, 200)
+        wait_ready(self.client, session["id"])
+
+    def test_upload_needs_a_video(self):
+        response = self.client.post("/api/sessions", data={"name": "Empty"})
+        self.assertEqual(response.status_code, 400)
+
+    def test_camera_addresses_are_checked(self):
+        self.assertEqual(self.client.post("/api/cameras", json={"side_url": "file:///etc/passwd"}).status_code, 400)
+        self.assertEqual(self.client.post("/api/cameras", json={"side_url": "rtsp://127.0.0.1/x"}).status_code, 400)
+
+    def test_security_headers(self):
+        page = self.client.get("/")
+        self.assertEqual(page.headers["x-content-type-options"], "nosniff")
+        self.assertIn("frame-ancestors 'none'", page.headers["content-security-policy"])
+        self.assertEqual(self.client.get("/api/health").headers["cache-control"], "no-store")
+
+
+class EdgeMachineTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        with mock.patch.dict(os.environ, {"VANSH_MACHINE": "edge"}):
+            self.client = TestClient(create_app(Path(self.tmp.name)))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_bowl_waits_for_the_bridge_at_the_nets(self):
+        queued = self.client.post("/api/machine", json={"line": "off stump", "length": "good", "pace_kph": 120}).json()
+        self.assertEqual(queued["length_m"], 7.0)
+        sent = self.client.post("/api/machine/bowl").json()
+        self.assertEqual(sent["status"], "sent to the nets")
+        waiting = self.client.get("/api/machine/requests").json()["items"]
+        self.assertEqual([item["id"] for item in waiting], [queued["id"]])
+        done = self.client.post(f"/api/machine/requests/{queued['id']}", json={"ok": True}).json()
+        self.assertEqual(done["via"], "edge")
+        machine = self.client.get("/api/machine").json()
+        self.assertEqual(machine["requests"], [])
+        self.assertEqual(len(machine["bowled"]), 1)
+
+    def test_a_refused_ball_goes_back_to_the_front(self):
+        first = self.client.post("/api/machine", json={"line": "middle", "length": "full"}).json()
+        self.client.post("/api/machine", json={"line": "middle", "length": "good"})
+        self.client.post("/api/machine/bowl")
+        self.client.post(f"/api/machine/requests/{first['id']}", json={"ok": False, "error": "Net not clear"})
+        self.assertEqual(self.client.get("/api/machine").json()["items"][0]["id"], first["id"])
+
+
+class CoachKeyTests(unittest.TestCase):
+    """With VANSH_COACH_KEY set: the way VANSH runs on vansh.best."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        with mock.patch.dict(os.environ, {"VANSH_COACH_KEY": "nets-at-six"}):
+            self.client = TestClient(create_app(Path(self.tmp.name)))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_the_lane_is_open_and_sessions_are_closed(self):
+        self.assertEqual(self.client.get("/api/health").status_code, 200)
+        self.assertEqual(self.client.get("/api/samples/bowling-clean").status_code, 200)
+        self.assertEqual(self.client.get("/api/sessions").status_code, 401)
+        self.assertEqual(self.client.post("/api/demo/tracked").status_code, 401)
+        self.assertEqual(self.client.get("/api/machine").status_code, 401)
+        self.assertFalse(self.client.get("/api/me").json()["coach"])
+
+    def test_signing_in_opens_the_sessions(self):
+        self.assertEqual(self.client.post("/api/login", json={"key": "wrong"}).status_code, 401)
+        self.assertEqual(self.client.post("/api/login", json={"key": "nets-at-six"}).status_code, 200)
+        self.assertTrue(self.client.get("/api/me").json()["coach"])
+        self.assertEqual(self.client.get("/api/sessions").status_code, 200)
+        self.client.post("/api/logout")
+        self.assertEqual(self.client.get("/api/sessions").status_code, 401)
+
+    def test_a_script_at_the_nets_uses_the_key_as_a_bearer_token(self):
+        headers = {"Authorization": "Bearer nets-at-six"}
+        self.assertEqual(self.client.get("/api/machine/requests", headers=headers).status_code, 200)
+        self.assertEqual(self.client.get("/api/machine/requests", headers={"Authorization": "Bearer no"}).status_code, 401)
+
+    def test_guessing_the_key_is_slowed_down(self):
+        codes = [self.client.post("/api/login", json={"key": f"guess-{n}"}).status_code for n in range(10)]
+        self.assertIn(429, codes)
+
+    def test_the_server_does_not_reach_into_camera_networks(self):
+        self.client.post("/api/login", json={"key": "nets-at-six"})
+        response = self.client.post("/api/cameras", json={"side_url": "rtsp://203.0.113.9/stream"})
+        self.assertEqual(response.status_code, 403)
+        self.assertIn("edge recorder", response.json()["detail"])
 
 
 if __name__ == "__main__":
