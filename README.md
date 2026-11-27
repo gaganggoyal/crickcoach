@@ -8,6 +8,8 @@ VANSH is a net coach that watches a cricket net through CCTV, at [vansh.best](ht
 
 Every number is a measurement with an error, and each ball says how sure it is. A ball marked "check this mark" should be confirmed by the coach.
 
+**Setting up real cameras?** The [setup guide](docs/SETUP.md) covers what to buy, where each camera goes, the camera settings, the bridge at the nets, calibration and checking the numbers. It is also at [vansh.best/setup](https://vansh.best/setup/), with a placement calculator and a camera address builder.
+
 ## How it fits together
 
 ```
@@ -40,35 +42,28 @@ With no `VANSH_COACH_KEY` set, everything is open. That suits a laptop on the ne
 | `VANSH_RADAR_PORT` | A localhost port where a radar gun sends one km/h reading per line. |
 | `VANSH_ALLOW_RTSP` | Let the server record RTSP cameras itself. It is on by default without a coach key and off with one. |
 | `VANSH_RTSP_PRIVATE` | Allow private camera addresses. It is on by default without a coach key and off with one. |
-| `VANSH_MAX_GB` | Refuse uploads once sessions use this much disk. The default is 20. |
+| `VANSH_MAX_GB` | Most video kept for sessions, in GB. The default is 20. When a new upload needs room, the oldest videos are removed first; their measurements, outcomes and cues stay. |
 
 ## Cameras
 
-Two fixed cameras cover a net. Either one works alone.
+The [setup guide](docs/SETUP.md) covers this in full, with diagrams. In short:
 
-- **The side-on camera measures pace and length.** Put it square to the middle of the pitch, 10 to 15 m from the stump line, with both sets of stumps in view. Note its distance from the stump line, because VANSH uses it to correct pace.
-- **The camera behind the bowler measures the line.** Put it high, 3 to 5 m up and 6 to 10 m behind the bowler's stumps, looking down the pitch.
-
-The shutter decides whether the ball can be seen. Set each camera to a fixed shutter of 1/500 s or faster. In the benchmark below, VANSH found the ball's length on almost every ball at 1/250 s, and on none at 1/60 s. Many CCTV cameras choose 1/50 s or slower in dim light unless the shutter is fixed.
-
-Frame rate and ball colour help too:
-
-- **Frame rate.** 50 frames a second beats 25. Pace error fell from about 5 km/h to about 3 km/h in the benchmark.
-- **Ball colour.** A white or pink ball is easier to track than a red one. H.264 at CCTV bitrates discards much of a small red ball's colour, so a red ball can drop out for a few frames. VANSH bridges dropouts of up to 0.17 s.
-- **Resolution.** Use 1080p or 720p. VANSH works on frames up to 1280 pixels wide.
+- **Side-on camera, for pace and length.** Put it 10 to 15 m from the line between the middle stumps, level with the middle of the pitch, 2 to 3 m up.
+- **Camera behind the bowler, for the line and the stumps.** Put it 8 m behind the bowler's stumps, 6 m up, over the line of middle stump, with about 50° of view. From 4.5 m up, the bowler's follow-through hid short balls. Use a white or pink ball and 50 frames a second for this camera.
+- **Shutter.** Fix every camera's shutter at 1/500 s. In the benchmark below, VANSH found the length on every ball at 1/250 s and on none at 1/60 s. Many CCTV cameras choose 1/50 s or slower in dim light unless the shutter is fixed.
 
 ## Calibrate, once per camera position
 
-Pause on a frame where the pitch is clear, press **Calibrate this camera**, and click the points in order. A magnifier follows the pointer.
+Pause on a frame where nobody stands in front of the stumps, press **Calibrate this camera**, and click four points. A magnifier follows the pointer.
 
-- **Side-on camera:** the foot of the stumps at the bowler's end, then the top of those stumps. Then the foot of the stumps at the batter's end, then the top of those stumps. Add the camera's distance from the stump line if you know it.
-- **Behind the bowler:** the four places where the popping creases meet the return creases. Start at the bowler's end, off side first.
+- **Side-on camera:** the foot and then the top of the stumps at the bowler's end, then the same at the batter's end. Add the camera's distance from the stump line.
+- **Behind the bowler:** the four places where the popping creases meet the return creases, bowler's end first, starting on the left of the picture.
 
-VANSH checks the clicks for order and spread. It keeps the calibration for the lane, so the next session starts with it. Calibrate again when a camera moves.
+VANSH checks the clicks for order and spread, and keeps the calibration for the lane. Calibrate again when a camera moves.
 
 ## A session
 
-1. **Upload or record.** Upload the side and behind files, record from CCTV, or send takes from the edge bridge.
+1. **Record or upload.** With the bridge running at the nets, press **Start recording**: a take arrives every 90 seconds, and the takes are grouped under the recording's name. Or upload the side and behind files.
 2. **Wait while VANSH works.** It looks for ball flights on each calibrated camera. It lines up the two cameras' clocks from the bounces, merges each ball's two readings, and shows progress as it goes.
 3. **Review each ball.** You see the track drawn on the video, the pitch, pace and stumps, and a pitch map seen from behind the bowler.
 4. **Mark the outcome.** The choices are left, defended, attacked, missed, edged or bowled. A click on the pitch map overrides the cameras' mark. **Use the cameras' mark** brings theirs back.
@@ -104,15 +99,18 @@ The test reels in `footage/` are rendered by `crickcoach/netsim.py`, and each co
 | Side, white, 25 fps, 1/250 s | 11 of 12 | 0.11 m | 5.5 km/h | — |
 | Side, red, 50 fps, 1/500 s | 11 of 12 | 0.17 m | 2.9 km/h | — |
 | Side, red, 25 fps, 1/60 s | 0 of 12 | — | — | — |
-| Behind, red, 25 fps, 1/250 s | 7 of 12 | 0.75 m | — | 8.5 cm |
-| Behind, white, 50 fps, 1/500 s | 10 of 12 | 0.44 m | — | 3.8 cm |
+| Behind (8 m back, 6 m up), white, 50 fps, 1/500 s | 11 of 12 | 0.12 m | — | 2.9 cm |
+| Behind (8 m back, 6 m up), red, 25 fps, 1/250 s | 5 of 12 | 1.53 m | — | 11.7 cm |
 
 The tracker VANSH started with, kept in `bench/grok_v1`, named the right length on 0 to 2 of 12 balls in every row. It locked onto the batter's pads, and it could not see a red ball at all.
+
+The camera behind the bowler is placed as the guide says, with all four crease corners in the picture for the coach to click. An earlier version of this benchmark aimed it so the near corners were out of view, which no coach could calibrate. Mounting positions were compared on the same twelve deliveries; at 4.5 m up, the bowler hid some short balls until they pitched.
 
 A few known limits:
 
 - **Pace from the side camera alone** reads 2 to 3% low or high when the ball travels 0.3 m off the stump line. With both cameras, VANSH corrects this from the release line.
 - **The behind camera measures no pace.** Seen from behind, a faster ball that drops faster looks the same.
+- **A red ball from behind.** From 6 m up at 25 frames a second, a red ball is hard to see against the pitch. Use a white or pink ball and 50 frames a second for the line.
 - **Real footage.** Nothing here has yet been checked against real net footage with a radar gun. That is the next test.
 
 ```bash
@@ -121,23 +119,26 @@ python -m bench.run score --set /tmp/vansh-bench --tracker vansh --window app
 python -m bench.run score --set /tmp/vansh-bench --tracker grok --window oracle
 ```
 
-## The edge bridge at the nets
+## The bridge at the nets
+
+The bridge runs on a laptop, mini PC or Raspberry Pi next to the cameras. It needs only `requirements-edge.txt`.
 
 ```bash
-# record both cameras for two minutes and send the take
-python -m crickcoach.edge record --server https://vansh.best \
-    --side rtsp://192.168.1.20/stream --behind rtsp://192.168.1.21/stream --seconds 120
-
-# keep sending takes until stopped
-python -m crickcoach.edge record ... --loop
+pip install -r requirements-edge.txt
+python -m crickcoach.edge check     # read each camera for five seconds and say how usable it is
+python -m crickcoach.edge run       # record whenever the coach presses Start, and send every take
 
 # bowl the coach's queue on the machine at the nets
-python -m crickcoach.edge machine --server https://vansh.best --machine 192.168.1.50:8520 --armed
+python -m crickcoach.edge machine --machine 192.168.1.50:8520 --armed
 ```
 
-The coach key comes from `--key` or `VANSH_COACH_KEY`. Run the server with `VANSH_MACHINE=edge` so that **Bowl next** sends balls to the bridge.
+- **Settings.** They come from `vansh-edge.env`: the server, the coach key and each camera's RTSP address. See [the example](docs/vansh-edge.env.example).
+- **Recording.** While the coach's recording runs, the bridge records every camera without a break. It keeps the cameras' own H.264 rather than re-encoding it, and cuts a take every 90 seconds.
+- **Sending.** It pairs the two cameras' takes by time and sends each pair as it finishes. If the internet drops, takes wait on disk.
+- **Reporting.** The coach screen shows the bridge, its cameras and the takes.
+- **Installing.** [Section 5 of the guide](docs/SETUP.md#5-the-bridge-at-the-nets) covers installing it and starting it with the computer.
 
-A bowling machine throws a hard ball at a person, so the bridge has three safeguards:
+Run the server with `VANSH_MACHINE=edge` so that **Bowl next** sends balls to the bridge. A bowling machine throws a hard ball at a person, so the bridge has three safeguards:
 
 - **Armed by hand.** It will not bowl unless started with `--armed`.
 - **A countdown.** It counts down before every ball.
@@ -196,7 +197,7 @@ ssh root@your-server cat /etc/vansh/vansh.env
 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
 ```
 
-The 69 tests take about half a minute. They cover the physics, the measurement, the raw reels end to end, the API with and without a coach key, the machine in all three modes, and the edge bridge's safeguards. They pass on Python 3.12, the VPS's version, and on 3.15.
+The 83 tests take about a minute. They cover the physics, the measurement, the raw reels end to end, the API with and without a coach key, recording at the nets through the bridge, the machine in all three modes, and the bridge's safeguards. They pass on Python 3.12, the VPS's version, and on 3.15.
 
 To render new reels:
 

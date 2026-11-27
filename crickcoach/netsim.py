@@ -110,10 +110,16 @@ def side_camera(*, width: int = 1280, height: int = 720, distance: float = 12.0,
     return look_at((x, along, mount), (0.0, along, 0.7), width=width, height=height, hfov_deg=hfov_deg)
 
 
-def behind_camera(*, width: int = 1280, height: int = 720, back: float = 8.0, mount: float = 4.5,
-                  hfov_deg: float = 40.0, offset: float = 0.0) -> Camera:
-    """High behind the bowler's stumps, looking down the pitch."""
-    return look_at((offset, -back, mount), (0.0, 15.0, 0.0), width=width, height=height, hfov_deg=hfov_deg)
+def behind_camera(*, width: int = 1280, height: int = 720, back: float = 8.0, mount: float = 6.0,
+                  hfov_deg: float = 50.0, offset: float = 0.0, aim: float = 7.25) -> Camera:
+    """High behind the bowler's stumps, looking down the pitch: the placement the guide recommends.
+
+    6 m up, the view to a short ball passes over the bowler's head and follow-
+    through; at 4.5 m the bowler hid short balls until they pitched. Aimed
+    7.25 m down the pitch, all four crease corners the coach clicks are in the
+    picture, the near ones just above the bottom edge.
+    """
+    return look_at((offset, -back, mount), (0.0, aim, 0.0), width=width, height=height, hfov_deg=hfov_deg)
 
 
 def side_clicks(camera: Camera, *, jitter_px: float = 0.0, seed: int = 0) -> dict:

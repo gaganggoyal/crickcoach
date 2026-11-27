@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 784 512" width="784" height="512" font-family="system-ui, -apple-system, Segoe UI, Roboto, sans-serif" role="img" aria-labelledby="title desc">
+<title id="title">Where the two cameras go, seen from above</title>
+<desc id="desc">The side-on camera stands 12 m from the line between the middle stumps, level with the middle of the pitch, looking square across it. The camera behind the bowler is 8 m behind the bowler's stumps, over the line of middle stump, looking down the pitch.</desc>
+<defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4d5a45"/></marker></defs>
+<rect width="784" height="512" rx="16" fill="#eef3e8"/>
+<text x="24.0" y="32.0" font-size="15" fill="#1f2a1a" text-anchor="start" font-weight="600">Seen from above</text>
+<text x="24.0" y="50.0" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">to scale; grid lines every 5 m</text>
+<line x1="128.0" y1="70" x2="128.0" y2="496" stroke="#dbe5d2" stroke-width="1"/>
+<line x1="238.0" y1="70" x2="238.0" y2="496" stroke="#dbe5d2" stroke-width="1"/>
+<line x1="348.0" y1="70" x2="348.0" y2="496" stroke="#dbe5d2" stroke-width="1"/>
+<line x1="458.0" y1="70" x2="458.0" y2="496" stroke="#dbe5d2" stroke-width="1"/>
+<line x1="568.0" y1="70" x2="568.0" y2="496" stroke="#dbe5d2" stroke-width="1"/>
+<line x1="678.0" y1="70" x2="678.0" y2="496" stroke="#dbe5d2" stroke-width="1"/>
+<path d="M459.3,400.0 L205.0,150.0 L713.6,150.0 z" fill="#2f6fb2" fill-opacity="0.12" stroke="#2f6fb2" stroke-opacity="0.55" stroke-width="1.2"/>
+<path d="M77.0,150.0 L717.6,92.8 L717.6,207.2 z" fill="#c9561f" fill-opacity="0.13" stroke="#c9561f" stroke-opacity="0.55" stroke-width="1.2"/>
+<path d="M273.2,108.2 H730.8 V191.8 H273.2" fill="none" stroke="#6f8266" stroke-width="1.5" stroke-dasharray="6 4"/>
+<text x="735.2" y="103.8" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">netting</text>
+<rect x="202.8" y="116.5" width="513.0" height="67.1" rx="3" fill="#d9c79a"/>
+<line x1="264.8" y1="109.7" x2="264.8" y2="190.3" stroke="#ffffff" stroke-width="2"/>
+<line x1="653.8" y1="109.7" x2="653.8" y2="190.3" stroke="#ffffff" stroke-width="2"/>
+<line x1="238.0" y1="121.0" x2="238.0" y2="179.0" stroke="#ffffff" stroke-width="2"/>
+<line x1="680.6" y1="121.0" x2="680.6" y2="179.0" stroke="#ffffff" stroke-width="2"/>
+<line x1="211.2" y1="121.0" x2="264.8" y2="121.0" stroke="#ffffff" stroke-width="2"/>
+<line x1="653.8" y1="121.0" x2="707.5" y2="121.0" stroke="#ffffff" stroke-width="2"/>
+<line x1="211.2" y1="179.0" x2="264.8" y2="179.0" stroke="#ffffff" stroke-width="2"/>
+<line x1="653.8" y1="179.0" x2="707.5" y2="179.0" stroke="#ffffff" stroke-width="2"/>
+<rect x="235.5" y="146.5" width="5" height="7.0" fill="#6b4a26"/>
+<rect x="678.1" y="146.5" width="5" height="7.0" fill="#6b4a26"/>
+<text x="238.0" y="95.0" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">Bowler's stumps</text>
+<text x="680.6" y="95.0" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">Batter's stumps</text>
+<line x1="238.0" y1="75.2" x2="680.6" y2="75.2" stroke="#4d5a45" stroke-width="1.3" marker-start="url(#a)" marker-end="url(#a)"/>
+<text x="459.3" y="69.2" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">20.12 m between the stumps</text>
+<line x1="48.8" y1="166.5" x2="216.0" y2="166.5" stroke="#4d5a45" stroke-width="1.3" stroke-dasharray="3 4" marker-end="url(#a)"/>
+<text x="132.4" y="184.1" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">run-up passes under the camera</text>
+<rect x="49.0" y="142.0" width="20" height="16" rx="3" fill="#c9561f"/><path d="M69.0,145.0 L77.0,141.0 L77.0,159.0 L69.0,155.0 z" fill="#c9561f"/>
+<text x="24.0" y="251.2" font-size="13" fill="#c9561f" text-anchor="start" font-weight="600">Camera behind the bowler</text>
+<text x="24.0" y="268.2" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">8 m behind the stumps,</text>
+<text x="24.0" y="283.2" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">6 m up, over the line</text>
+<text x="24.0" y="298.2" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">of middle stump</text>
+<line x1="62.0" y1="207.2" x2="238.0" y2="207.2" stroke="#4d5a45" stroke-width="1.3" marker-start="url(#a)" marker-end="url(#a)"/>
+<text x="150.0" y="223.2" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">8 m</text>
+<rect x="451.3" y="407.0" width="16" height="20" rx="3" fill="#2f6fb2"/><path d="M454.3,407.0 L450.3,399.0 L468.3,399.0 L464.3,407.0 z" fill="#2f6fb2"/>
+<line x1="489.3" y1="187.4" x2="489.3" y2="406.0" stroke="#4d5a45" stroke-width="1.3" marker-start="url(#a)" marker-end="url(#a)"/>
+<text x="497.3" y="308.4" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">12 m (10 to 15 m)</text>
+<text x="497.3" y="323.4" font-size="12" fill="#4d5a45" text-anchor="start" font-weight="400">from the stump line</text>
+<text x="459.3" y="444.0" font-size="13" fill="#2f6fb2" text-anchor="middle" font-weight="600">Side-on camera</text>
+<text x="459.3" y="461.0" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">level with the middle of the pitch, 2 to 3 m up,</text>
+<text x="459.3" y="476.0" font-size="12" fill="#4d5a45" text-anchor="middle" font-weight="400">both sets of stumps in view with 1.5 m to spare</text>
+</svg>

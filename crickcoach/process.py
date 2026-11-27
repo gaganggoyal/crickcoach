@@ -80,9 +80,12 @@ def _progress(store: Store, session_id: str, share: float, message: str) -> None
 def find_and_track(store: Store, session_id: str) -> None:
     """Find every ball on each calibrated camera, line the clocks up, and build the deliveries."""
     session = store.get(session_id)
+    if session.get("video_removed"):
+        raise RuntimeError("This session's video was removed to make room. Its measurements are kept.")
     folder = store.folder(session_id)
     calibration = session.get("calibration") or {}
     files = {camera: folder / name for camera, name in (session.get("cameras") or {}).items() if name}
+    files = playable(store, session_id, files)
     flights: dict[str, list[dict]] = {}
     plan = [camera for camera in CAMERAS if camera in files and calibration.get(camera)]
     for position, camera in enumerate(plan):
@@ -119,6 +122,39 @@ def find_and_track(store: Store, session_id: str) -> None:
         session["error"] = ""
 
     store.update(session_id, save)
+
+
+def playable(store: Store, session_id: str, files: dict[str, Path]) -> dict[str, Path]:
+    """Make sure browsers can play every camera's video.
+
+    Phones and some CCTV cameras record H.265, which most browsers cannot
+    show. VANSH measures from any format, but the coach reviews in a browser,
+    so anything other than H.264 is converted once, here.
+    """
+    from crickcoach.video import probe, transcode_h264
+
+    converted = dict(files)
+    for camera, path in files.items():
+        try:
+            codec = probe(path).codec
+        except RuntimeError:
+            continue
+        if codec == "h264":
+            continue
+        _progress(store, session_id, 0.0, f"Converting the {camera} video so browsers can play it…")
+        target = path.with_name(f"{camera}.mp4")
+        temporary = path.with_name(f".{camera}-h264.mp4")
+        transcode_h264(path, temporary)
+        if path != target:
+            path.unlink(missing_ok=True)
+        temporary.replace(target)
+        converted[camera] = target
+
+        def rename(session: dict, camera=camera, name=target.name) -> None:
+            session["cameras"][camera] = name
+
+        store.update(session_id, rename)
+    return converted
 
 
 def _deliveries_from_flights(flights: dict[str, list[dict]], offset: float, batter: str) -> list[dict]:
@@ -213,6 +249,8 @@ def retrack(store: Store, session_id: str) -> None:
 
 def measure_delivery(store: Store, session: dict, delivery: dict, camera: str) -> dict:
     """Track one ball on one camera. The camera behind uses the side camera's timing when it has it."""
+    if session.get("video_removed"):
+        raise RuntimeError("This session's video was removed to make room. Its measurements are kept.")
     path = store.folder(session["id"]) / session["cameras"][camera]
     calibration = session["calibration"][camera]
     t0, t1 = float(delivery["t0"]), float(delivery["t1"])

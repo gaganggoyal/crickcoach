@@ -38,7 +38,12 @@ const state = {
   calib: null,
   poll: 0,
   pending: null,
+  sessions: [],
+  nets: null,
+  netsTakes: -1,
 };
+
+const NETS_ACTIVE = ["starting", "recording", "stopping"];
 
 const $ = (id) => document.getElementById(id);
 
@@ -169,7 +174,10 @@ function showView(name) {
     button.classList.toggle("on", button.dataset.view === name);
   });
   if (name !== "lane" && needCoach()) return;
-  if (name === "sessions") refreshSessions().catch((error) => setStatus(error.message));
+  if (name === "sessions") {
+    refreshSessions().catch((error) => setStatus(error.message));
+    refreshNets();
+  }
   if (name === "machine") refreshMachine().catch((error) => setStatus(error.message));
 }
 
@@ -462,13 +470,22 @@ async function refreshSessions() {
     line.textContent = "No balls logged yet.";
   }
   const data = await api("/api/sessions");
+  state.sessions = data.sessions;
   const root = $("session-list");
   root.replaceChildren();
+  renderTakes();
   if (!data.sessions.length) {
     root.innerHTML = '<p class="empty">No sessions yet.</p>';
     return;
   }
+  const seen = new Set();
   for (const session of data.sessions) {
+    const seriesId = session.series?.id;
+    if (seriesId) {
+      if (!seen.has(seriesId)) root.appendChild(seriesCard(seriesId));
+      seen.add(seriesId);
+      continue;
+    }
     const card = document.createElement("div");
     card.className = "session-card";
     if (state.session && state.session.id === session.id) card.classList.add("on");
@@ -483,6 +500,166 @@ async function refreshSessions() {
     root.appendChild(card);
   }
 }
+
+function seriesTakes(seriesId) {
+  return state.sessions
+    .filter((item) => item.series?.id === seriesId)
+    .sort((a, b) => a.series.take - b.series.take);
+}
+
+function seriesCard(seriesId) {
+  const takes = seriesTakes(seriesId);
+  const first = takes[0];
+  const balls = takes.reduce((sum, item) => sum + item.deliveries, 0);
+  const live = state.nets?.recording;
+  const recording = live && live.id === seriesId && NETS_ACTIVE.includes(live.state);
+  const working = takes.filter((item) => item.job).length;
+  const status = recording ? "recording" : working ? `working on ${plural(working, "take")}` : "ready";
+  const card = document.createElement("div");
+  card.className = "session-card series";
+  if (state.session?.series?.id === seriesId) card.classList.add("on");
+  card.innerHTML = `<div><strong>${esc(first.series.name)}</strong><span>${esc(first.role)} · ${plural(takes.length, "take")} · ${plural(balls, "ball")} · ${esc(status)}</span><div class="take-chips"></div></div>`;
+  const chips = card.querySelector(".take-chips");
+  for (const take of takes) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.textContent = take.series.take;
+    chip.title = `Take ${take.series.take}: ${plural(take.deliveries, "ball")}`;
+    if (state.session?.id === take.id) chip.classList.add("on");
+    if (take.job) chip.classList.add("busy");
+    chip.addEventListener("click", () => openSession(take.id));
+    chips.appendChild(chip);
+  }
+  const open = document.createElement("button");
+  open.type = "button";
+  open.textContent = "Open";
+  open.addEventListener("click", () => openSession(takes[takes.length - 1].id));
+  card.appendChild(open);
+  return card;
+}
+
+function renderTakes() {
+  const root = $("takes");
+  const session = state.session;
+  if (!root || !session?.series) return;
+  root.replaceChildren();
+  const label = document.createElement("span");
+  label.className = "note";
+  label.textContent = "Takes";
+  root.appendChild(label);
+  for (const take of seriesTakes(session.series.id)) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.innerHTML = `${take.series.take}<small>${take.job ? "…" : plural(take.deliveries, "ball")}</small>`;
+    if (take.id === session.id) button.classList.add("on");
+    button.addEventListener("click", () => openSession(take.id));
+    root.appendChild(button);
+  }
+}
+
+// ---------------------------------------------------------------- recording at the nets
+
+async function refreshNets() {
+  window.clearTimeout(state.netsTimer);
+  if ($("view-sessions").hidden || (state.me.auth_required && !state.me.coach)) return;
+  try {
+    state.nets = await api("/api/nets");
+    renderNets();
+    const takes = state.nets.recording?.takes ?? 0;
+    if (takes !== state.netsTakes) {
+      state.netsTakes = takes;
+      refreshSessions().catch(() => {});
+    }
+  } catch (error) {
+    $("nets-status").innerHTML = `<p class="nets-line"><span class="dot off"></span><span>${esc(error.message)}</span></p>`;
+  }
+  const active = NETS_ACTIVE.includes(state.nets?.recording?.state);
+  state.netsTimer = window.setTimeout(refreshNets, active ? 3000 : 8000);
+}
+
+function ago(seconds) {
+  if (seconds == null) return "never";
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
+  if (seconds < 172800) return `${Math.round(seconds / 3600)} h ago`;
+  return `${Math.round(seconds / 86400)} days ago`;
+}
+
+function cameraLine(name, info) {
+  if (!info) return "";
+  if (info.ok === false) return `${name}: ${info.error || "no picture"}`;
+  const size = info.width ? `${info.width}×${info.height}` : "";
+  const fps = info.fps ? `${Math.round(info.fps)} fps` : "";
+  const live = info.recording ? " · recording" : "";
+  return `${name} ${[size, fps].filter(Boolean).join(", ")}${live}`;
+}
+
+function renderNets() {
+  const nets = state.nets;
+  if (!nets) return;
+  const recording = nets.recording;
+  const active = recording && NETS_ACTIVE.includes(recording.state);
+  const edge = nets.edge || {};
+  const lines = [];
+  if (active && recording.state === "starting") {
+    lines.push(nets.online ? ["wait", "Starting the cameras…"] : ["wait", "Waiting for the bridge at the nets to come online…"]);
+  } else if (active && recording.state === "recording") {
+    const waiting = edge.queue ? ` · ${edge.queue} waiting to upload` : "";
+    lines.push(["rec", `Recording “${recording.name}” · ${plural(recording.takes || 0, "take")} sent${waiting}`]);
+  } else if (active) {
+    lines.push(["wait", "Stopping. The last take is on its way."]);
+  } else if (!edge.seen) {
+    lines.push(["off", "No bridge has connected yet. Install it on a computer at the nets."]);
+  } else if (!nets.online) {
+    lines.push(["off", `The bridge at the nets is offline. Last seen ${ago(nets.seen_ago_s)}.`]);
+  } else {
+    lines.push(["ok", `The bridge is online${edge.host ? ` on ${edge.host}` : ""}.`]);
+  }
+  const cameras = Object.entries(edge.cameras || {}).map(([name, info]) => cameraLine(name, info)).filter(Boolean);
+  if (cameras.length && nets.online) lines.push(["", cameras.join(" · ")]);
+  else if (nets.check?.cameras && Object.keys(nets.check.cameras).length) {
+    const checked = Object.entries(nets.check.cameras).map(([name, info]) => cameraLine(name, info)).join(" · ");
+    lines.push(["", `Camera check ${ago((Date.now() - Date.parse(nets.check.at)) / 1000)}: ${checked}`]);
+  }
+  if (edge.error && nets.online) lines.push(["bad", edge.error]);
+  if (!active && recording?.state === "stopped" && recording.takes) {
+    lines.push(["", `Last recording: “${recording.name}”, ${plural(recording.takes, "take")}.`]);
+  }
+  $("nets-status").innerHTML = lines
+    .map(([tone, text]) => `<p class="nets-line">${tone ? `<span class="dot ${tone}"></span>` : '<span class="dot none"></span>'}<span>${esc(text)}</span></p>`)
+    .join("");
+  $("nets-start").hidden = Boolean(active);
+  $("nets-stop").hidden = !active;
+  $("nets-stop").textContent = recording?.state === "stopping" ? "Stop now" : "Stop recording";
+  $("nets-fields").disabled = Boolean(active);
+}
+
+$("nets-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (needCoach()) return;
+  const form = new FormData(event.target);
+  try {
+    state.nets = await postJSON("/api/nets/start", {
+      name: form.get("name"), role: form.get("role"), batter: form.get("batter"),
+    });
+    renderNets();
+    setStatus(state.nets.online ? "Recording requested" : "Recording requested. The bridge at the nets is offline.");
+    refreshNets();
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+$("nets-stop").addEventListener("click", async () => {
+  try {
+    state.nets = await postJSON("/api/nets/stop");
+    renderNets();
+    setStatus("Stopping the recording");
+    refreshNets();
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
 
 async function openSession(id) {
   try {
@@ -557,13 +734,13 @@ function renderReview() {
   const delivery = currentDelivery();
   state.deliveryId = delivery ? delivery.id : null;
   const camera = state.reviewCamera;
-  const hasVideo = Boolean(session.cameras && session.cameras[camera]);
+  const hasVideo = Boolean(session.cameras && session.cameras[camera]) && !session.video_removed;
   const both = Boolean(session.cameras.side && session.cameras.behind);
   const calibrated = Boolean((session.calibration || {})[camera]);
   root.innerHTML = `
     <div class="panel-head">
       <div>
-        <h2>${esc(session.name)}</h2>
+        <h2>${esc(session.series ? `${session.series.name} · take ${session.series.take}` : session.name)}</h2>
         <span class="note">${esc(session.role)} · ${esc(session.status)}${session.found_by ? ` · balls found by ${esc(session.found_by)}` : ""}${both ? ` · behind camera clock ${session.clock_offset >= 0 ? "+" : ""}${Number(session.clock_offset || 0).toFixed(2)} s (${esc(session.clock_note || "kept")})` : ""}</span>
       </div>
       <div class="switch" id="batter-switch" title="The batter on strike">
@@ -571,11 +748,14 @@ function renderReview() {
         <button type="button" data-batter="left" class="${session.batter === "left" ? "on" : ""}">Left-hander</button>
       </div>
     </div>
+    ${session.series ? '<div class="delivery-row takes" id="takes"></div>' : ""}
     <div id="job" class="job" hidden><div class="bar"><span></span></div><p></p></div>
     ${session.error ? `<p class="error">${esc(session.error)}</p>` : ""}
     ${both ? `<div class="switch" id="camera-switch"><button type="button" data-camera="side" class="${camera === "side" ? "on" : ""}">Side camera</button><button type="button" data-camera="behind" class="${camera === "behind" ? "on" : ""}">Behind the bowler</button></div>` : ""}
     ${hasVideo ? `<div class="video-box"><video id="review-video" controls playsinline preload="auto" src="/api/sessions/${session.id}/media/${camera}"></video><canvas id="track-overlay"></canvas><canvas id="loupe" width="168" height="168" hidden></canvas></div>
-      <div id="calib-bar" class="calib-bar" hidden></div>` : `<p class="empty">Saved from the live lane. This ball has cues and no video.</p>`}
+      <div id="calib-bar" class="calib-bar" hidden></div>` : session.video_removed
+        ? `<p class="empty">The video was removed on ${esc(session.video_removed.slice(0, 10))} to make room. The measurements, outcomes and cues are kept.</p>`
+        : `<p class="empty">Saved from the live lane. This ball has cues and no video.</p>`}
     <div class="delivery-row" id="delivery-row"></div>
     <div class="review-grid">
       <div>
@@ -610,6 +790,7 @@ function renderReview() {
       </div>
     </div>`;
   renderJob();
+  renderTakes();
   renderDeliveryRow(session, delivery);
   renderFacts(delivery, session);
   drawPitchMap(session, delivery);
@@ -702,7 +883,7 @@ function wireReview(session, delivery, hasVideo) {
   $("save-pace").addEventListener("click", () => savePace(delivery));
   $("apply-radar").addEventListener("click", () => applyRadar(delivery));
   $("send-machine").addEventListener("click", () => sendMachine(delivery));
-  $("queue-this-drill").addEventListener("click", () => queueDrill(session.id));
+  $("queue-this-drill").addEventListener("click", () => queueDrill(session));
   $("delete-session").addEventListener("click", () => deleteSession(session.id));
   $("remove-ball")?.addEventListener("click", () => removeBall(delivery));
   if (!hasVideo) return;
@@ -1086,9 +1267,10 @@ async function sendMachine(delivery) {
   }
 }
 
-async function queueDrill(sessionId) {
+async function queueDrill(session) {
   try {
-    const plan = await postJSON("/api/drill", { session_id: sessionId || null });
+    const body = session?.series ? { series_id: session.series.id } : { session_id: session?.id || null };
+    const plan = await postJSON("/api/drill", body);
     setStatus(plan.reason);
     showView("machine");
   } catch (error) {

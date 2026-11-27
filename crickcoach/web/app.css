@@ -173,7 +173,7 @@ input[type="file"] { padding: 6px; }
 .buttons { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 
 .session-tools { display: flex; flex-direction: column; gap: 18px; }
-.session-tools form, .machine-form { flex-direction: column; align-items: stretch; }
+.session-tools form, .machine-form { flex-direction: column; align-items: stretch; flex-wrap: nowrap; }
 .session-list, .machine-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
 .session-card, .ball-row { justify-content: space-between; background: #182014; border-radius: 12px; padding: 10px; border: 1px solid transparent; }
 .session-card.on { border-color: var(--cream); }
@@ -236,3 +236,41 @@ footer { padding: 0 22px 22px; color: var(--muted); font-size: 13px; }
   .view, #view-sessions, #view-machine, .review-grid { grid-template-columns: 1fr; }
   .stage-wrap { min-height: 240px; }
 }
+
+/* Setup link in the header */
+.navlink {
+  padding: 8px 14px;
+  border-radius: 999px;
+  color: var(--ink);
+  text-decoration: none;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-family: "Avenir Next Condensed", "Arial Narrow", sans-serif;
+  border: 1px solid var(--line);
+}
+.navlink:hover { border-color: var(--cream); }
+
+/* Recording at the nets */
+.nets fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 12px; min-width: 0; }
+.nets fieldset:disabled { opacity: 0.55; }
+.nets-status { background: #141b11; border: 1px solid var(--line); border-radius: 12px; padding: 8px 10px; margin-bottom: 10px; }
+.nets-line { display: flex; gap: 8px; align-items: baseline; margin: 2px 0; font-size: 14px; color: var(--ink); }
+.nets-line + .nets-line { color: var(--muted); font-size: 13px; }
+.dot { flex: 0 0 auto; width: 9px; height: 9px; border-radius: 50%; background: var(--muted); transform: translateY(-1px); }
+.dot.ok { background: var(--good); }
+.dot.wait { background: var(--watch); }
+.dot.rec { background: var(--fix); box-shadow: 0 0 0 0 rgba(227, 107, 74, 0.6); animation: rec 1.6s infinite; }
+.dot.bad { background: var(--fix); }
+.dot.off { background: #5d6a55; }
+.dot.none { visibility: hidden; }
+@keyframes rec { 70% { box-shadow: 0 0 0 7px rgba(227, 107, 74, 0); } 100% { box-shadow: 0 0 0 0 rgba(227, 107, 74, 0); } }
+@media (prefers-reduced-motion: reduce) { .dot.rec { animation: none; } }
+.nets .hint a, .session-tools .hint a { color: var(--cream); }
+
+/* A recording's takes */
+.take-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.take-chips button { min-width: 30px; padding: 2px 8px !important; font-size: 13px; }
+.take-chips button.on { background: var(--cream); color: #1a2114; }
+.take-chips button.busy { border-style: dashed; }
+.takes { margin: 4px 0 8px; }
+.takes .note { margin-right: 4px; }

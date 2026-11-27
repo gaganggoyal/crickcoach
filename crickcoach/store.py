@@ -13,6 +13,7 @@ import re
 import secrets
 import shutil
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -22,6 +23,8 @@ from typing import Any
 _SESSION_ID = re.compile(r"^[a-f0-9]{12}$")
 _DELIVERY_ID = re.compile(r"^d[0-9]{1,4}$")
 _BALL_ID = re.compile(r"^[a-f0-9]{8}$")
+VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v"}
+NETS_EMPTY = {"version": 0, "recording": None, "recent": [], "edge": None, "check": None}
 
 
 def now_iso() -> str:
@@ -38,6 +41,7 @@ class Store:
         self.bowled_path = self.machine_dir / "bowled.json"
         self.requests_path = self.machine_dir / "requests.json"
         self.lane_path = self.root / "lane.json"
+        self.nets_path = self.root / "nets.json"
         self.lock = threading.RLock()
         self._session_locks: dict[str, threading.Lock] = {}
         self.sessions.mkdir(parents=True, exist_ok=True)
@@ -63,6 +67,8 @@ class Store:
             "clock_offset": 0.0,
             "found_by": None,
             "job": None,
+            "series": None,
+            "video_removed": None,
             "deliveries": [],
         }
         folder = self.sessions / session["id"]
@@ -116,7 +122,8 @@ class Store:
             except KeyError:
                 continue
             for delivery in session.get("deliveries") or []:
-                found.append({**delivery, "session_id": session["id"], "batter": session.get("batter", "right")})
+                found.append({**delivery, "session_id": session["id"], "batter": session.get("batter", "right"),
+                              "series": session.get("series")})
         return found
 
     def delete(self, session_id: str) -> None:
@@ -125,6 +132,44 @@ class Store:
             raise KeyError(session_id)
         with self._session_lock(session_id):
             shutil.rmtree(folder)
+
+    def free_video(self, target_bytes: int, *, protect_s: float = 2 * 86400) -> list[str]:
+        """Remove the oldest sessions' video until sessions fit in target_bytes.
+
+        Like a CCTV recorder, VANSH keeps the newest video and lets the oldest
+        go. The measurements, outcomes and cues stay. Sessions from the last
+        two days, and sessions being worked on, are never touched.
+        """
+        freed: list[str] = []
+        total = self.disk_bytes()
+        cutoff = time.time() - protect_s
+        for summary in sorted(self.list_sessions(), key=lambda item: item["created"]):
+            if total <= target_bytes:
+                break
+            try:
+                created = datetime.fromisoformat(summary["created"]).timestamp()
+            except ValueError:
+                continue
+            if created > cutoff or summary.get("job"):
+                continue
+            folder = self.folder(summary["id"])
+            videos = [path for path in folder.iterdir() if path.suffix.lower() in VIDEO_SUFFIXES]
+            if not videos:
+                continue
+            size = sum(path.stat().st_size for path in videos)
+
+            def change(session: dict, videos=videos) -> None:
+                for path in videos:
+                    path.unlink(missing_ok=True)
+                session["video_removed"] = now_iso()
+
+            try:
+                self.update(summary["id"], change)
+            except KeyError:
+                continue
+            total -= size
+            freed.append(summary["id"])
+        return freed
 
     def disk_bytes(self) -> int:
         total = 0
@@ -235,6 +280,24 @@ class Store:
                     return item
         raise KeyError(item_id)
 
+    # -- the nets: a recording at the nets and the bridge that makes it -----
+
+    def nets(self) -> dict:
+        if not self.nets_path.exists():
+            return json.loads(json.dumps(NETS_EMPTY))
+        try:
+            saved = json.loads(self.nets_path.read_text())
+        except json.JSONDecodeError:
+            saved = {}
+        return {**json.loads(json.dumps(NETS_EMPTY)), **saved}
+
+    def update_nets(self, change: Callable[[dict], Any]) -> tuple[dict, Any]:
+        with self.lock:
+            nets = self.nets()
+            result = change(nets)
+            _write_json(self.nets_path, nets)
+        return nets, result
+
     # -- secrets ------------------------------------------------------------
 
     def secret(self) -> bytes:
@@ -260,6 +323,8 @@ def upgrade(session: dict) -> dict:
     session.setdefault("batter", "right")
     session.setdefault("clock_offset", 0.0)
     session.setdefault("job", None)
+    session.setdefault("series", None)
+    session.setdefault("video_removed", None)
     for delivery in session.get("deliveries") or []:
         pitch = delivery.get("pitch")
         if pitch and "length_m" not in pitch and pitch.get("y") is not None:
@@ -297,6 +362,9 @@ def _summary(session: dict) -> dict:
         "deliveries": len(deliveries),
         "tracked": sum(1 for delivery in deliveries if delivery.get("pitch")),
         "job": session.get("job"),
+        "batter": session.get("batter", "right"),
+        "series": session.get("series"),
+        "video_removed": session.get("video_removed"),
         "cameras": {
             "side": bool(session.get("cameras", {}).get("side")),
             "behind": bool(session.get("cameras", {}).get("behind")),

@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
+import secrets
 import socket
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -21,11 +24,14 @@ from crickcoach.cues import coach, parse_frames
 from crickcoach.drill import drill_plan
 from crickcoach.footage import copy_clip
 from crickcoach.geometry import ground_plane, side_plane
+from crickcoach.guide import DOCS
+from crickcoach.guide import render as render_guide
 from crickcoach.machine_link import MachineLink, command_for, listen_radar
 from crickcoach.pitch import LENGTHS, LINES, clean_line, describe, target_for
 from crickcoach.process import Busy, recover, refresh, submit, track_one
 from crickcoach.samples import CATALOG, sample_payload
 from crickcoach.store import Store, check_delivery_id, now_iso
+from crickcoach.video import redact
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = Path(__file__).resolve().parent / "web"
@@ -40,6 +46,9 @@ VIDEO_TYPES = {
 OUTCOMES = ("left", "defended", "attacked", "missed", "edged", "bowled")
 PUBLIC_API = {"/api/health", "/api/me", "/api/login", "/api/logout", "/api/samples", "/api/live/cues"}
 SIDE_KEYS = ("bowler_base", "bowler_top", "batter_base", "batter_top")
+SERIES_ID = re.compile(r"^r[a-f0-9]{8}$")
+RECORDING = ("starting", "recording")
+ONLINE_S = 40
 
 
 class LiveBody(BaseModel):
@@ -106,7 +115,32 @@ class RadarBody(BaseModel):
 
 class DrillBody(BaseModel):
     session_id: str | None = None
+    series_id: str | None = None
     count: int = Field(default=6, ge=1, le=18)
+
+
+class NetsStart(BaseModel):
+    name: str = Field(default="Net session", max_length=80)
+    role: str = "bowling"
+    batter: str = "right"
+
+
+class EdgeStatus(BaseModel):
+    state: str = Field(default="idle", max_length=20)
+    recording_id: str | None = Field(default=None, max_length=20)
+    cameras: dict = Field(default_factory=dict)
+    queue: int = Field(default=0, ge=0)
+    queue_mb: float = Field(default=0, ge=0)
+    sent: int = Field(default=0, ge=0)
+    uploading: str | None = Field(default=None, max_length=120)
+    error: str = Field(default="", max_length=600)
+    host: str = Field(default="", max_length=80)
+    version: str = Field(default="", max_length=20)
+    take_seconds: int | None = Field(default=None, ge=3, le=900)
+
+
+class CameraCheckBody(BaseModel):
+    cameras: dict = Field(default_factory=dict)
 
 
 class LoginBody(BaseModel):
@@ -160,7 +194,7 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         response.headers.setdefault("Referrer-Policy", "same-origin")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
-        if path == "/" or path.endswith(".html"):
+        if response.headers.get("content-type", "").startswith("text/html"):
             response.headers.setdefault(
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; "
@@ -255,6 +289,115 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         frames = parse_frames(body.frames)
         return {"role": role, "cues": [cue.to_dict() for cue in coach(role, frames)]}
 
+    # -- recording at the nets ----------------------------------------------------
+    #
+    # The coach presses Start on this screen. The bridge at the nets, which
+    # waits on /api/nets/poll, starts both cameras and sends a take every
+    # minute or two. Each take becomes a session in the recording's series.
+
+    @app.get("/api/nets")
+    def nets_status() -> dict:
+        return _nets_view(store.nets())
+
+    @app.post("/api/nets/start")
+    def nets_start(body: NetsStart) -> dict:
+        role = _role(body.role)
+        batter = _batter(body.batter)
+
+        def change(nets: dict) -> None:
+            current = nets.get("recording")
+            if current and current["state"] in (*RECORDING, "stopping"):
+                raise HTTPException(409, "A recording is already running. Stop it first.")
+            nets["recording"] = {
+                "id": "r" + secrets.token_hex(4),
+                "name": body.name.strip()[:80] or "Net session",
+                "role": role,
+                "batter": batter,
+                "state": "starting",
+                "requested": now_iso(),
+                "started": None,
+                "stopped": None,
+                "takes": 0,
+            }
+            nets["version"] += 1
+
+        nets, _ = store.update_nets(change)
+        _wake(app)
+        return _nets_view(nets)
+
+    @app.post("/api/nets/stop")
+    def nets_stop() -> dict:
+        def change(nets: dict) -> None:
+            recording = nets.get("recording")
+            if not recording or recording["state"] not in (*RECORDING, "stopping"):
+                raise HTTPException(409, "Nothing is recording.")
+            if recording["state"] == "recording":
+                recording["state"] = "stopping"
+                recording["stop_requested"] = now_iso()
+            else:
+                # Never started, or a second press while the bridge is quiet: stop at once.
+                _finish_recording(nets, recording)
+            nets["version"] += 1
+
+        nets, _ = store.update_nets(change)
+        _wake(app)
+        return _nets_view(nets)
+
+    @app.get("/api/nets/poll")
+    def nets_poll(since: int = -1, wait: float = 0.0) -> dict:
+        """For the bridge at the nets: the recording it should be making. wait long-polls."""
+        deadline = time.time() + max(0.0, min(wait, 25.0))
+        store.update_nets(_mark_seen)
+        with app.state.wake:
+            while store.nets()["version"] <= since and time.time() < deadline:
+                app.state.wake.wait(timeout=max(0.0, deadline - time.time()))
+        nets = store.nets()
+        return {"version": nets["version"], "recording": nets.get("recording")}
+
+    @app.post("/api/nets/status")
+    def nets_report(body: EdgeStatus) -> dict:
+        def change(nets: dict) -> bool:
+            before = nets["version"]
+            nets["edge"] = {
+                "seen": now_iso(),
+                "state": body.state if body.state in {"idle", "recording"} else "idle",
+                "recording_id": body.recording_id,
+                "cameras": _camera_reports(body.cameras),
+                "queue": body.queue,
+                "queue_mb": round(body.queue_mb, 1),
+                "sent": body.sent,
+                "uploading": redact(body.uploading or "") or None,
+                "error": redact(body.error),
+                "host": body.host,
+                "version": body.version,
+                "take_seconds": body.take_seconds,
+            }
+            recording = nets.get("recording")
+            if recording and recording["state"] == "starting" and body.state == "recording" \
+                    and body.recording_id == recording["id"]:
+                recording["state"] = "recording"
+                recording["started"] = now_iso()
+                nets["version"] += 1
+            if recording and recording["state"] == "stopping" and \
+                    (body.state == "idle" or body.recording_id != recording["id"]):
+                _finish_recording(nets, recording)
+                nets["version"] += 1
+            return nets["version"] != before
+
+        nets, changed = store.update_nets(change)
+        if changed:
+            _wake(app)
+        return {"version": nets["version"], "recording": nets.get("recording")}
+
+    @app.post("/api/nets/check")
+    def nets_check(body: CameraCheckBody) -> dict:
+        """The bridge's camera check, so the coach can see it from here."""
+        def change(nets: dict) -> None:
+            nets["check"] = {"at": now_iso(), "cameras": _camera_reports(body.cameras)}
+
+        nets, _ = store.update_nets(change)
+        return _nets_view(nets)
+
     # -- sessions -------------------------------------------------------------
 
     @app.post("/api/snapshots")
@@ -281,13 +424,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         batter: str = Form("right"),
         side: UploadFile | None = File(None),
         behind: UploadFile | None = File(None),
+        series_id: str = Form(""),
+        series_name: str = Form(""),
+        take: int = Form(0),
     ) -> dict:
         role = _role(role)
         if (side is None or not side.filename) and (behind is None or not behind.filename):
             raise HTTPException(400, "Upload a video from at least one camera.")
+        series = None
+        if series_id:
+            if not SERIES_ID.fullmatch(series_id) or not 1 <= take <= 9999:
+                raise HTTPException(400, "That take does not belong to a recording.")
+            series = {"id": series_id, "name": (series_name or name).strip()[:80] or "Net session", "take": take}
         if store.disk_bytes() > max_bytes:
-            raise HTTPException(507, "The server is full. Delete old sessions first.")
+            store.free_video(int(max_bytes * 0.85))
+            if store.disk_bytes() > max_bytes:
+                raise HTTPException(507, "The server is full. Delete old sessions first.")
         session = store.create_session(name=name, role=role, status="processing")
+        session["series"] = series
         try:
             for camera, upload in (("side", side), ("behind", behind)):
                 if upload is not None and upload.filename:
@@ -298,6 +452,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         session["batter"] = _batter(batter)
         store.save(session)
         submit(store, session["id"], "find")
+        if series:
+            _count_take(store, series)
         return store.get(session["id"])
 
     @app.post("/api/cameras")
@@ -585,7 +741,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     @app.post("/api/drill")
     def make_drill(body: DrillBody) -> dict:
         batter = "right"
-        if body.session_id:
+        if body.series_id:
+            deliveries = [item for item in store.all_deliveries() if (item.get("series") or {}).get("id") == body.series_id]
+            if not deliveries:
+                raise HTTPException(404, "That recording has no balls yet.")
+            batter = deliveries[-1].get("batter", "right")
+        elif body.session_id:
             session = _session_or_404(store, body.session_id)
             deliveries = session.get("deliveries") or []
             batter = session.get("batter", "right")
@@ -682,6 +843,17 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def favicon() -> Response:
         return Response(status_code=204)
 
+    # -- the setup guide, open to anyone ---------------------------------------------
+
+    @app.get("/setup")
+    def setup_redirect() -> RedirectResponse:
+        return RedirectResponse("/setup/", status_code=307)
+
+    @app.get("/setup/")
+    def setup_page() -> HTMLResponse:
+        return HTMLResponse(render_guide())
+
+    app.mount("/setup/img", StaticFiles(directory=DOCS / "img"), name="guide-img")
     app.mount("/assets", StaticFiles(directory=WEB), name="assets")
     return app
 
@@ -716,6 +888,77 @@ def _signed_in(request: Request, auth: Auth) -> bool:
     if header.lower().startswith("bearer ") and auth.check_key(header[7:]):
         return True
     return auth.valid(request.cookies.get(COOKIE))
+
+
+CAMERA_FIELDS = {
+    "ok": bool, "recording": bool, "codec": str, "width": int, "height": int, "fps": float, "fps_camera": float,
+    "keyframe_s": float, "kbps": int, "missing_frames": int, "error": str,
+}
+
+
+def _camera_reports(cameras: dict) -> dict:
+    """Keep the known, plain fields of what the bridge says about each camera."""
+    reports = {}
+    for name in ("side", "behind"):
+        value = cameras.get(name) if isinstance(cameras, dict) else None
+        if not isinstance(value, dict):
+            continue
+        report = {}
+        for key, kind in CAMERA_FIELDS.items():
+            item = value.get(key)
+            if item is None:
+                continue
+            try:
+                report[key] = redact(str(item))[:400] if kind is str else kind(item)
+            except (TypeError, ValueError):
+                continue
+        warnings = value.get("warnings")
+        if isinstance(warnings, list):
+            report["warnings"] = [redact(str(item))[:300] for item in warnings[:8]]
+        reports[name] = report
+    return reports
+
+
+def _nets_view(nets: dict) -> dict:
+    edge = nets.get("edge") or None
+    seen_ago = None
+    if edge and edge.get("seen"):
+        try:
+            seen_ago = max(0.0, time.time() - datetime.fromisoformat(edge["seen"]).timestamp())
+        except ValueError:
+            seen_ago = None
+    return {
+        "version": nets.get("version", 0),
+        "recording": nets.get("recording"),
+        "recent": nets.get("recent") or [],
+        "edge": edge,
+        "online": seen_ago is not None and seen_ago < ONLINE_S,
+        "seen_ago_s": round(seen_ago) if seen_ago is not None else None,
+        "check": nets.get("check"),
+    }
+
+
+def _mark_seen(nets: dict) -> None:
+    edge = nets.get("edge") or {}
+    edge["seen"] = now_iso()
+    nets["edge"] = edge
+
+
+def _finish_recording(nets: dict, recording: dict) -> None:
+    recording["state"] = "stopped"
+    recording["stopped"] = now_iso()
+    recent = [item for item in nets.get("recent") or [] if item.get("id") != recording["id"]]
+    nets["recent"] = [dict(recording), *recent][:12]
+
+
+def _count_take(store: Store, series: dict) -> None:
+    def change(nets: dict) -> None:
+        for recording in [nets.get("recording"), *(nets.get("recent") or [])]:
+            if recording and recording.get("id") == series["id"]:
+                recording["takes"] = max(int(recording.get("takes") or 0), int(series["take"]))
+                recording["last_take"] = now_iso()
+
+    store.update_nets(change)
 
 
 def _wake(app: FastAPI) -> None:

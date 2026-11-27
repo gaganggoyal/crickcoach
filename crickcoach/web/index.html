@@ -20,6 +20,7 @@
       <button type="button" data-view="lane" class="on">Lane</button>
       <button type="button" data-view="sessions">Sessions</button>
       <button type="button" data-view="machine">Machine</button>
+      <a class="navlink" href="/setup/">Setup</a>
     </nav>
     <p id="status" role="status" aria-live="polite">Ready</p>
     <div id="account" class="account"></div>
@@ -83,6 +84,34 @@
 
   <section id="view-sessions" class="view" hidden>
     <div class="panel session-tools">
+      <form id="nets-form" class="nets">
+        <h2>Record at the nets</h2>
+        <div id="nets-status" class="nets-status" aria-live="polite">
+          <p class="nets-line"><span class="dot"></span><span>Looking for the bridge at the nets…</span></p>
+        </div>
+        <fieldset id="nets-fields">
+          <label>Name <input name="name" value="Net session" required maxlength="80"></label>
+          <div class="row">
+            <label>Role
+              <select name="role">
+                <option value="bowling">Bowling</option>
+                <option value="batting">Batting</option>
+              </select>
+            </label>
+            <label>Batter
+              <select name="batter">
+                <option value="right">Right-handed</option>
+                <option value="left">Left-handed</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+        <div class="buttons">
+          <button type="submit" class="primary" id="nets-start">Start recording</button>
+          <button type="button" id="nets-stop" hidden>Stop recording</button>
+        </div>
+        <p class="hint">The bridge on a computer at the nets records both cameras and sends a take every minute and a half. <a href="/setup/#5-the-bridge-at-the-nets">Set up the cameras and the bridge</a>.</p>
+      </form>
       <form id="upload-form">
         <h2>Upload a net session</h2>
         <label>Name <input name="name" value="Net session" required maxlength="80"></label>

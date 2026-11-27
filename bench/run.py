@@ -76,11 +76,16 @@ def grok_calibration(camera: netsim.Camera, kind: str, seed: int) -> dict:
     }
 
 
-def make(out: Path, n: int, seed: int) -> None:
+def make(out: Path, n: int, seed: int, only: str | None = None) -> None:
+    """Render n clips per scenario. With only, render the matching scenarios and keep the rest of the set."""
     out.mkdir(parents=True, exist_ok=True)
     index = []
+    if only and (out / "set.json").exists():
+        index = [item for item in json.loads((out / "set.json").read_text())["clips"] if only not in item["scenario"]]
     started = time.time()
     for scenario_index, (name, spec) in enumerate(SCENARIOS.items()):
+        if only and only not in name:
+            continue
         rng = np.random.default_rng(seed + 1000 * scenario_index)
         camera = _camera(spec["camera"])
         for k in range(n):
@@ -287,6 +292,7 @@ def main() -> None:
     make_parser.add_argument("--out", type=Path, required=True)
     make_parser.add_argument("--n", type=int, default=12)
     make_parser.add_argument("--seed", type=int, default=7)
+    make_parser.add_argument("--only", default=None, help="render only scenarios whose name contains this")
     score_parser = sub.add_parser("score")
     score_parser.add_argument("--set", type=Path, required=True)
     score_parser.add_argument("--tracker", choices=sorted(TRACKERS), required=True)
@@ -295,7 +301,7 @@ def main() -> None:
     score_parser.add_argument("--exact-clicks", action="store_true")
     args = parser.parse_args()
     if args.command == "make":
-        make(args.out, args.n, args.seed)
+        make(args.out, args.n, args.seed, args.only)
     else:
         global EXACT_CLICKS
         EXACT_CLICKS = args.exact_clicks

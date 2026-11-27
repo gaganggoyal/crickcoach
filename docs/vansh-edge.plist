@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Starts the VANSH bridge when you log in to this Mac, and restarts it if it stops.
+
+  1. Change the three paths below to match where you put the vansh folder.
+  2. cp docs/vansh-edge.plist ~/Library/LaunchAgents/best.vansh.edge.plist
+  3. launchctl load ~/Library/LaunchAgents/best.vansh.edge.plist
+  Its messages go to /tmp/vansh-edge.log. Turn off sleep in System Settings too.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>best.vansh.edge</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>/Users/you/vansh/.venv/bin/python</string>
+    <string>-m</string>
+    <string>crickcoach.edge</string>
+    <string>run</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/you/vansh</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/vansh-edge.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/vansh-edge.log</string>
+</dict>
+</plist>

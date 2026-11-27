@@ -468,6 +468,13 @@ def _behind(points: list[dict], calibration: dict, width: int, height: int) -> d
         gap = math.hypot(solved["bounce"][0] - bounce[0], solved["bounce"][1] - bounce[1])
         if gap <= 0.6:
             bounce = solved["bounce"]
+    length_m = STUMP_TO_STUMP_M - bounce[1]
+    if not -0.5 <= length_m <= STUMP_TO_STUMP_M - 0.7:
+        # A "bounce" behind the batter's stumps or behind the bowling crease is not
+        # the ball pitching: the flight before the bounce was hidden, usually by
+        # the bowler's follow-through, and the kink found is something later.
+        return _empty("behind", "The ball was hidden before it pitched, often behind the bowler's follow-through, "
+                                "so this camera could not place the bounce.")
     if kink["n_pre"] < 2 or kink["n_post"] < 2:
         confidence = "low"
     residual_px = float(np.sqrt(np.mean(kink["residual"] ** 2)))
