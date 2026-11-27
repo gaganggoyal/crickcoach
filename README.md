@@ -1,8 +1,6 @@
 # CrickCoach
 
-CrickCoach is a net-side cricket coach. Two fixed cameras watch a session, the clip is cut into one window per ball, and the coach screen gives three cues from the player's body. A bowling-machine queue stores the next ball to bowl.
-
-This version is the lane you can run on a computer at the net. It records and reviews. It does not drive a bowling machine, and it does not measure ball speed from the picture.
+CrickCoach is a net-side cricket coach. Two fixed cameras watch a session. Each ball is cut out, the body is read for three coaching cues, and the ball is tracked for pace, line, and length. Misses become the next drill, and that drill is sent to a bowling machine.
 
 ## Run
 
@@ -26,10 +24,37 @@ Anyone who can reach that address can start a camera recording, so use it on the
 ## What you do in the lane
 
 - **Lane.** Start a camera, or load a sample action. The skeleton is drawn on the picture and three cues update while you bowl or hold a stance. Save the ball to the session log.
-- **Sessions.** Upload the side-camera video. An optional second file is the camera behind the bowler, kept for replay. The clip is cut on motion, one window per delivery. Open a ball, press **Read the action**, and click the pitch where it bounced. Pace is typed in, from a radar gun or a watch.
-- **Machine.** Queue line, length, and pace. The current queue is `data/machine/queue.json`. Each new ball is also appended to `data/machine/spool.jsonl` for a later machine bridge.
+- **Sessions.** Upload the side-camera video. An optional second file is the camera behind the bowler. The clip is cut on motion, one window per delivery. **Read the action** measures the body. **Calibrate camera**, then **Track the ball**, measures the flight. Mark how the batter played it: left, defended, attacked, missed, edged, or hit.
+- **Machine.** The queue is line, length, and pace. **Queue the next drill** looks at the misses and repeats the length that beat the batter. **Bowl next** sends a ball. With no machine address this is a simulator, and the ball moves to the bowled list.
 
-Load a sample clip on the Sessions page to see the cutter without a real video. The sample has two bursts of motion and no player in it, so **Read the action** reports that nobody is in frame.
+**Load a tracked ball** is a side-on clip with a known pitch. It should come back as a good length with a pace. **Load a sample clip** has two bursts of motion and no player, so the action reader reports that nobody is in frame.
+
+## Ball tracking
+
+Calibrate once per camera, on a frame where the pitch is clear.
+
+Side camera, in order: bowling crease on the pitch, batting crease on the pitch, top of the off stump. This camera gives length and pace. It does not give the line. Pace uses the stumps as a 71 cm ruler and the 20.12 m between the stumps.
+
+Behind the bowler, in order: off and leg corners at the bowler's end, then leg and off corners at the batter's end. The bounce gives line and length. Pace assumes a 2 m release, because that camera does not see height. A ball on middle stump at the batter's end is marked as hitting the stumps.
+
+Both numbers are estimates from one camera. A coach still checks the mark. A radar reading replaces the camera pace: post `{"pace_kph": 138}` to `/api/radar`, or set `CRICKCOACH_RADAR_PORT` and send one number per line.
+
+## Bowling machine
+
+Each queued ball is also appended to `data/machine/spool.jsonl`. The bowled log is `data/machine/bowled.json`.
+
+A machine listens for one JSON line and replies with one JSON line:
+
+```json
+{"cmd": "bowl", "id": "ab12cd34", "pace_kph": 125, "line": "off", "length": "good"}
+{"ok": true, "id": "ab12cd34"}
+```
+
+```bash
+CRICKCOACH_MACHINE=192.168.1.50:8520 python -m crickcoach
+```
+
+`serve` in `crickcoach/machine_link.py` is a reference listener a bridge can copy. Leave `CRICKCOACH_MACHINE` unset to bowl into the simulator.
 
 ## Cameras
 
@@ -51,7 +76,3 @@ Angles are measured in the picture, so they describe a side-on bowling action an
 ```bash
 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
 ```
-
-## What comes next
-
-Ball speed, line, and length from a fast camera, then a bridge that sends the queue to a programmable bowling machine. The queue file is the contract for that bridge.

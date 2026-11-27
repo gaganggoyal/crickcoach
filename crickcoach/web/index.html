@@ -94,7 +94,11 @@
         <label>Seconds <input name="seconds" type="number" min="3" max="90" value="20"></label>
         <button type="submit">Record</button>
       </form>
-      <button type="button" id="demo-session" class="ghost">Load a sample clip</button>
+      <div class="buttons">
+        <button type="button" id="demo-session" class="ghost">Load a sample clip</button>
+        <button type="button" id="demo-tracked" class="ghost">Load a tracked ball</button>
+      </div>
+      <p id="progress" class="note"></p>
       <div id="session-list" class="session-list"></div>
     </div>
     <div id="review" class="review">
@@ -105,7 +109,7 @@
   <section id="view-machine" class="view" hidden>
     <form id="machine-form" class="machine-form">
       <h2>Queue a ball</h2>
-      <p class="hint">The queue is the contract for a programmable bowling machine. CrickCoach stores each ball. It does not drive the wheels yet.</p>
+      <p class="hint">Bowl next sends the queue to the machine. With no machine address, the simulator records each ball. Set CRICKCOACH_MACHINE=host:8520 for a real feeder.</p>
       <label>Pace km/h <input name="pace_kph" type="number" min="40" max="180" step="1" placeholder="125"></label>
       <label>Line
         <select name="line">
@@ -127,10 +131,18 @@
       </label>
       <label>Note <input name="note" maxlength="200" placeholder="Block and leave"></label>
       <button type="submit">Add to the queue</button>
+      <div class="buttons">
+        <button type="button" id="bowl-next">Bowl next</button>
+        <button type="button" id="bowl-all">Bowl the queue</button>
+        <button type="button" id="queue-drill">Queue the next drill</button>
+      </div>
+      <p id="radar-line" class="note"></p>
     </form>
     <div>
       <h2>Waiting</h2>
       <div id="machine-list" class="machine-list"></div>
+      <h2>Bowled</h2>
+      <div id="bowled-list" class="machine-list"></div>
     </div>
   </section>
 

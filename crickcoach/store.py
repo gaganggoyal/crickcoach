@@ -24,6 +24,7 @@ class Store:
         self.machine_dir = self.root / "machine"
         self.machine_path = self.machine_dir / "queue.json"
         self.spool_path = self.machine_dir / "spool.jsonl"
+        self.bowled_path = self.machine_dir / "bowled.json"
         self.lock = threading.Lock()
         self.sessions.mkdir(parents=True, exist_ok=True)
         self.machine_dir.mkdir(parents=True, exist_ok=True)
@@ -37,6 +38,7 @@ class Store:
             "status": status,
             "error": "",
             "cameras": {"side": None, "behind": None},
+            "calibration": {"side": None, "behind": None},
             "deliveries": [],
         }
         with self.lock:
@@ -110,10 +112,38 @@ class Store:
         if not re.fullmatch(r"[a-f0-9]{8}", item_id):
             raise KeyError(item_id)
         with self.lock:
-            items = [item for item in self.machine_items() if item["id"] != item_id]
-            if len(items) == len(self.machine_items()):
+            items = self.machine_items()
+            kept = [item for item in items if item["id"] != item_id]
+            if len(kept) == len(items):
                 raise KeyError(item_id)
+            _write_json(self.machine_path, {"items": kept})
+
+    def take_next_ball(self) -> dict:
+        with self.lock:
+            items = self.machine_items()
+            if not items:
+                raise KeyError("empty")
+            nxt = items.pop(0)
             _write_json(self.machine_path, {"items": items})
+            return nxt
+
+    def put_front(self, item: dict) -> None:
+        with self.lock:
+            items = self.machine_items()
+            items.insert(0, item)
+            _write_json(self.machine_path, {"items": items})
+
+    def bowled_items(self) -> list[dict]:
+        if not self.bowled_path.exists():
+            return []
+        return list(json.loads(self.bowled_path.read_text()).get("items", []))
+
+    def add_bowled(self, record: dict) -> dict:
+        with self.lock:
+            items = self.bowled_items()
+            items.append(record)
+            _write_json(self.bowled_path, {"items": items[-80:]})
+        return record
 
 
 def check_delivery_id(delivery_id: str) -> str:

@@ -90,6 +90,50 @@ class ApiTests(unittest.TestCase):
         listing = self.client.get("/api/sessions")
         self.assertEqual(listing.json()["sessions"][0]["name"], "Open stance")
 
+    def test_tracked_sample_fills_length_and_pace(self):
+        response = self.client.post("/api/demo/tracked")
+        self.assertEqual(response.status_code, 200, response.text)
+        session = response.json()
+        self.assertEqual(session["status"], "ready", session.get("error"))
+        delivery = session["deliveries"][0]
+        self.assertEqual(delivery["pitch"]["length"], "good")
+        self.assertGreater(delivery["pace_kph"], 40)
+        self.assertLess(delivery["pace_kph"], 180)
+        self.assertEqual(delivery["tracking"]["confidence"] in {"ok", "low"}, True)
+
+    def test_track_asks_for_a_calibration(self):
+        session = self.client.post("/api/demo/session").json()
+        response = self.client.post(f"/api/sessions/{session['id']}/deliveries/d1/track")
+        self.assertEqual(response.status_code, 400)
+
+    def test_drill_and_bowl(self):
+        session = self.client.post("/api/demo/tracked").json()
+        marked = self.client.post(
+            f"/api/sessions/{session['id']}/deliveries/d1/pitch",
+            json={"x": 0.7, "y": 0.75},
+        )
+        self.assertEqual(marked.json()["pitch"]["length"], "full")
+        outcome = self.client.post(
+            f"/api/sessions/{session['id']}/deliveries/d1/outcome",
+            json={"outcome": "missed"},
+        )
+        self.assertEqual(outcome.status_code, 200)
+        drill = self.client.post("/api/drill", json={"session_id": session["id"], "count": 6})
+        self.assertEqual(drill.status_code, 200)
+        self.assertEqual(len(drill.json()["items"]), 6)
+        self.assertIn("full", drill.json()["reason"])
+        bowled = self.client.post("/api/machine/bowl")
+        self.assertEqual(bowled.status_code, 200)
+        self.assertEqual(bowled.json()["via"], "simulator")
+        machine = self.client.get("/api/machine").json()
+        self.assertEqual(len(machine["items"]), 5)
+        self.assertEqual(len(machine["bowled"]), 1)
+
+    def test_radar_reading_is_stored(self):
+        saved = self.client.post("/api/radar", json={"pace_kph": 141})
+        self.assertEqual(saved.json()["pace_kph"], 141)
+        self.assertEqual(self.client.get("/api/radar").json()["pace_kph"], 141)
+
 
 if __name__ == "__main__":
     unittest.main()

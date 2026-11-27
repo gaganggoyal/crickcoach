@@ -13,10 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from crickcoach.cues import coach, parse_frames
+from crickcoach.drill import drill_plan
+from crickcoach.flight import analyse_clip
+from crickcoach.machine_link import MachineLink, listen_radar
 from crickcoach.pitch import LENGTHS, LINES, describe_pitch
 from crickcoach.samples import CATALOG, sample_payload
-from crickcoach.store import Store, check_delivery_id
-from crickcoach.video import cut_video, record_rtsp, synthesize_two_deliveries
+from crickcoach.store import Store, check_delivery_id, now_iso
+from crickcoach.video import cut_video, record_rtsp, synthesize_two_deliveries, write_tracked_sample
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = Path(__file__).resolve().parent / "web"
@@ -71,10 +74,43 @@ class CameraBody(BaseModel):
     seconds: int = Field(default=20, ge=3, le=90)
 
 
+class CalibrationBody(BaseModel):
+    kind: str
+    bowling: dict | None = None
+    batting: dict | None = None
+    stump_top: dict | None = None
+    corners: list[dict] | None = None
+
+
+class OutcomeBody(BaseModel):
+    outcome: str
+
+
+class RadarBody(BaseModel):
+    pace_kph: float
+
+
+class DrillBody(BaseModel):
+    session_id: str | None = None
+    count: int = 6
+
+
+OUTCOMES = ("left", "defended", "attacked", "missed", "edged", "hit")
+
+
 def create_app(data_dir: Path | None = None) -> FastAPI:
     store = Store(data_dir or Path(os.environ.get("CRICKCOACH_DATA", ROOT / "data")))
-    app = FastAPI(title="CrickCoach", version="0.1.0")
+    app = FastAPI(title="CrickCoach", version="0.2.0")
     app.state.store = store
+    app.state.machine = MachineLink(os.environ.get("CRICKCOACH_MACHINE"))
+    app.state.radar = {"pace_kph": None, "at": None}
+    radar_port = os.environ.get("CRICKCOACH_RADAR_PORT")
+    if radar_port and radar_port.isdigit():
+        threading.Thread(
+            target=listen_radar,
+            args=(int(radar_port), app.state.radar, threading.Event()),
+            daemon=True,
+        ).start()
 
     @app.get("/api/health")
     def health() -> dict:
@@ -87,7 +123,12 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         except Exception as exc:  # pragma: no cover - environment failure
             ffmpeg_ok = False
             detail = str(exc)
-        return {"ok": True, "ffmpeg": ffmpeg_ok, "detail": detail}
+        return {
+            "ok": True,
+            "ffmpeg": ffmpeg_ok,
+            "detail": detail,
+            "machine": app.state.machine.mode,
+        }
 
     @app.get("/api/samples")
     def list_samples() -> dict:
@@ -196,6 +237,24 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             session["error"] = str(exc)
         return store.save(session)
 
+    @app.post("/api/demo/tracked")
+    def demo_tracked() -> dict:
+        session = store.create_session(name="Tracked sample ball", role="bowling", status="processing")
+        path = store.folder(session["id"]) / "side.mp4"
+        try:
+            sample = write_tracked_sample(path)
+            session["cameras"]["side"] = "side.mp4"
+            session["calibration"]["side"] = sample["calibration"]
+            delivery = _delivery(1, 0.0, sample["duration"])
+            measured = analyse_clip(path, delivery["t0"], delivery["t1"], sample["calibration"])
+            _apply_tracking(delivery, measured)
+            session["deliveries"] = [delivery]
+            session["status"] = "ready"
+        except Exception as exc:
+            session["status"] = "error"
+            session["error"] = str(exc)
+        return store.save(session)
+
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict:
         return _session_or_404(store, session_id)
@@ -252,9 +311,105 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         store.save(session)
         return delivery
 
+    @app.post("/api/sessions/{session_id}/calibration/{camera}")
+    def calibrate(session_id: str, camera: str, body: CalibrationBody) -> dict:
+        if camera not in {"side", "behind"}:
+            raise HTTPException(404, "Unknown camera.")
+        session = _session_or_404(store, session_id)
+        session.setdefault("calibration", {"side": None, "behind": None})
+        session["calibration"][camera] = _calibration(camera, body)
+        return store.save(session)
+
+    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/track")
+    def track_delivery(session_id: str, delivery_id: str, camera: str = "side") -> dict:
+        if camera not in {"side", "behind"}:
+            raise HTTPException(400, "Camera must be side or behind.")
+        session = _session_or_404(store, session_id)
+        delivery = _delivery_or_404(session, delivery_id)
+        calibration = (session.get("calibration") or {}).get(camera)
+        if not calibration:
+            raise HTTPException(400, "Calibrate this camera first.")
+        filename = (session.get("cameras") or {}).get(camera)
+        if not filename:
+            raise HTTPException(404, "That camera has no video.")
+        path = store.folder(session_id) / filename
+        try:
+            measured = analyse_clip(path, float(delivery["t0"]), float(delivery["t1"]), calibration)
+        except RuntimeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        _apply_tracking(delivery, measured)
+        store.save(session)
+        return delivery
+
+    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/outcome")
+    def mark_outcome(session_id: str, delivery_id: str, body: OutcomeBody) -> dict:
+        outcome = body.outcome.strip().lower()
+        if outcome not in OUTCOMES:
+            raise HTTPException(400, "Outcome must be left, defended, attacked, missed, edged, or hit.")
+        session = _session_or_404(store, session_id)
+        delivery = _delivery_or_404(session, delivery_id)
+        delivery["outcome"] = outcome
+        store.save(session)
+        return delivery
+
+    @app.get("/api/radar")
+    def radar() -> dict:
+        return app.state.radar
+
+    @app.post("/api/radar")
+    def set_radar(body: RadarBody) -> dict:
+        app.state.radar = {"pace_kph": _pace(body.pace_kph), "at": now_iso()}
+        return app.state.radar
+
+    @app.get("/api/progress")
+    def progress() -> dict:
+        deliveries = _all_deliveries(store)
+        plan = drill_plan(deliveries, count=6)
+        paces = [delivery["pace_kph"] for delivery in deliveries if delivery.get("pace_kph")]
+        counts: dict[str, int] = {}
+        for delivery in deliveries:
+            outcome = delivery.get("outcome")
+            if outcome:
+                counts[outcome] = counts.get(outcome, 0) + 1
+        return {
+            "balls": len(deliveries),
+            "outcomes": counts,
+            "mean_pace_kph": round(sum(paces) / len(paces), 1) if paces else None,
+            "next_drill": plan["reason"],
+        }
+
+    @app.post("/api/drill")
+    def make_drill(body: DrillBody) -> dict:
+        if body.session_id:
+            deliveries = _session_or_404(store, body.session_id).get("deliveries") or []
+        else:
+            deliveries = _all_deliveries(store)
+        plan = drill_plan(deliveries, count=body.count)
+        queued = [
+            store.queue_ball(
+                {
+                    "pace_kph": ball["pace_kph"],
+                    "line": ball["line"],
+                    "length": ball["length"],
+                    "note": ball["note"],
+                    "session_id": body.session_id,
+                    "delivery_id": None,
+                }
+            )
+            for ball in plan["balls"]
+        ]
+        return {"reason": plan["reason"], "items": queued}
+
     @app.get("/api/machine")
     def machine() -> dict:
-        return {"items": store.machine_items(), "lines": list(LINES), "lengths": list(LENGTHS)}
+        return {
+            "items": store.machine_items(),
+            "bowled": store.bowled_items(),
+            "mode": app.state.machine.mode,
+            "radar": app.state.radar,
+            "lines": list(LINES),
+            "lengths": list(LENGTHS),
+        }
 
     @app.post("/api/machine")
     def queue_machine(body: MachineBody) -> dict:
@@ -273,6 +428,19 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             }
         )
         return item
+
+    @app.post("/api/machine/bowl")
+    def bowl_next() -> dict:
+        return _bowl_one(store, app.state.machine)
+
+    @app.post("/api/machine/bowl-all")
+    def bowl_all() -> dict:
+        bowled = []
+        while store.machine_items():
+            bowled.append(_bowl_one(store, app.state.machine))
+            if len(bowled) >= 18:
+                break
+        return {"bowled": bowled}
 
     @app.delete("/api/machine/{item_id}")
     def unqueue(item_id: str) -> dict:
@@ -338,7 +506,72 @@ def _delivery(
         "pitch": None,
         "pace_kph": None,
         "pose_note": "",
+        "outcome": None,
+        "tracking": None,
     }
+
+
+def _apply_tracking(delivery: dict, measured: dict) -> None:
+    delivery["tracking"] = measured
+    if measured.get("pace_kph") is not None and delivery.get("pace_kph") is None:
+        delivery["pace_kph"] = measured["pace_kph"]
+    if measured.get("pitch") and delivery.get("pitch") is None:
+        delivery["pitch"] = measured["pitch"]
+    if measured.get("hit_stumps") and not delivery.get("outcome"):
+        delivery["outcome"] = "hit"
+
+
+def _bowl_one(store: Store, machine: MachineLink) -> dict:
+    try:
+        item = store.take_next_ball()
+    except KeyError:
+        raise HTTPException(400, "The queue is empty.") from None
+    try:
+        record = machine.bowl(item)
+    except RuntimeError as exc:
+        store.put_front(item)
+        raise HTTPException(502, str(exc)) from exc
+    record["bowled_at"] = now_iso()
+    return store.add_bowled(record)
+
+
+def _calibration(camera: str, body: CalibrationBody) -> dict:
+    if camera == "side" or body.kind == "side":
+        if not body.bowling or not body.batting:
+            raise HTTPException(400, "Click the bowling crease and the batting crease.")
+        saved = {
+            "kind": "side",
+            "bowling": _point(body.bowling, "the bowling crease"),
+            "batting": _point(body.batting, "the batting crease"),
+            "stump_top": _point(body.stump_top, "the top of the stumps") if body.stump_top else None,
+        }
+        return saved
+    corners = body.corners or []
+    if len(corners) != 4:
+        raise HTTPException(400, "Click the four corners of the pitch.")
+    return {"kind": "behind", "corners": [_point(corner, "a corner") for corner in corners]}
+
+
+def _point(value: dict, name: str) -> dict:
+    try:
+        x = float(value["x"])
+        y = float(value["y"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(400, f"Need a click for {name}.") from None
+    if not 0 <= x <= 1 or not 0 <= y <= 1:
+        raise HTTPException(400, f"The click for {name} is outside the picture.")
+    return {"x": round(x, 4), "y": round(y, 4)}
+
+
+def _all_deliveries(store: Store) -> list[dict]:
+    found = []
+    for summary in store.list_sessions():
+        try:
+            session = store.get(summary["id"])
+        except KeyError:
+            continue
+        found.extend(session.get("deliveries") or [])
+    return found
 
 
 def _role(role: str) -> str:

@@ -17,6 +17,7 @@ const state = {
   session: null,
   deliveryId: null,
   reviewCamera: "side",
+  calib: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -353,6 +354,14 @@ $("save-ball").addEventListener("click", async () => {
 });
 
 async function refreshSessions() {
+  const progress = await api("/api/progress");
+  const progressLine = $("progress");
+  if (progressLine) {
+    const pace = progress.mean_pace_kph ? ` · mean ${progress.mean_pace_kph} km/h` : "";
+    progressLine.textContent = progress.balls
+      ? `${progress.balls} balls logged${pace}. ${progress.next_drill}`
+      : "No balls logged yet.";
+  }
   const data = await api("/api/sessions");
   const root = $("session-list");
   root.replaceChildren();
@@ -395,7 +404,7 @@ function renderReview() {
       <span class="note">${esc(session.role)} · ${esc(session.status)}</span>
     </div>
     ${session.error ? `<p class="note">${esc(session.error)}</p>` : ""}
-    ${hasVideo ? `<video id="review-video" controls playsinline src="/api/sessions/${session.id}/media/${state.reviewCamera}"></video>` : `<p class="empty">Saved from the live lane. This ball has cues and no video.</p>`}
+    ${hasVideo ? `<div class="video-box"><video id="review-video" controls playsinline src="/api/sessions/${session.id}/media/${state.reviewCamera}"></video><canvas id="track-overlay"></canvas></div>` : `<p class="empty">Saved from the live lane. This ball has cues and no video.</p>`}
     <div class="delivery-row" id="delivery-row"></div>
     <div id="review-cues"></div>
     <div class="pitch-wrap">
@@ -410,10 +419,15 @@ function renderReview() {
         <p>Click where the ball pitched. The top is the bowler, the bottom is the batter. Off is on the left for a right-hander.</p>
         <p id="pitch-text" class="measure"></p>
         <label>Pace km/h <input id="pace-input" type="number" min="40" max="180" step="1"></label>
+        <div class="delivery-row" id="outcomes"></div>
         <div class="buttons">
           <button type="button" id="read-action">Read the action</button>
+          <button type="button" id="track-ball">Track the ball</button>
+          <button type="button" id="calibrate">Calibrate camera</button>
+          <button type="button" id="apply-radar">Apply radar</button>
           <button type="button" id="save-pace">Save pace</button>
           <button type="button" id="send-machine">Send to the machine</button>
+          <button type="button" id="queue-this-drill">Queue the next drill</button>
           ${session.cameras && session.cameras.behind ? '<button type="button" id="swap-camera">Swap camera</button>' : ""}
           <button type="button" id="delete-session" class="ghost">Delete session</button>
         </div>
@@ -447,22 +461,35 @@ function renderReview() {
       cueRoot.innerHTML = '<p class="empty">Read the action to measure this ball.</p>';
     }
     $("pitch-text").textContent = delivery.pitch ? delivery.pitch.text : "No pitch mark yet.";
-    if (delivery.pitch) {
+    if (delivery.pitch && delivery.pitch.x != null) {
       const mark = $("pitch-mark");
       mark.setAttribute("cx", String(8 + delivery.pitch.x * 64));
       mark.setAttribute("cy", String(6 + delivery.pitch.y * 188));
       mark.setAttribute("visibility", "visible");
     }
     if (delivery.pace_kph) $("pace-input").value = delivery.pace_kph;
-    const notes = [delivery.cut_note, delivery.pose_note].filter(Boolean).join(" ");
+    const notes = [delivery.cut_note, delivery.pose_note, delivery.tracking?.note, delivery.outcome ? `Shot: ${delivery.outcome}` : ""].filter(Boolean).join(" ");
     $("review-note").textContent = notes;
+    const outcomes = $("outcomes");
+    for (const name of ["left", "defended", "attacked", "missed", "edged", "hit"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = name;
+      if (delivery.outcome === name) button.classList.add("on");
+      button.addEventListener("click", () => markOutcome(delivery, name, button));
+      outcomes.appendChild(button);
+    }
   }
   $("review-cues").replaceWith(cueRoot);
   cueRoot.id = "review-cues";
   $("pitch").addEventListener("click", (event) => markPitch(event, delivery));
   $("read-action").addEventListener("click", () => readAction(delivery));
+  $("track-ball").addEventListener("click", () => trackBall(delivery));
+  $("calibrate").addEventListener("click", () => startCalibration());
+  $("apply-radar").addEventListener("click", () => applyRadar(delivery));
   $("save-pace").addEventListener("click", () => savePace(delivery));
   $("send-machine").addEventListener("click", () => sendMachine());
+  $("queue-this-drill").addEventListener("click", () => queueDrill());
   $("delete-session").addEventListener("click", () => deleteSession(session.id));
   const swap = $("swap-camera");
   if (swap) {
@@ -471,7 +498,15 @@ function renderReview() {
       renderReview();
     });
   }
-  if (delivery && hasVideo) playDelivery(delivery);
+  const reviewVideo = $("review-video");
+  if (reviewVideo) reviewVideo.addEventListener("click", (event) => onVideoClick(event, reviewVideo));
+  if (delivery && hasVideo) {
+    playDelivery(delivery);
+    const overlay = $("track-overlay");
+    const draw = () => drawTrack(delivery);
+    reviewVideo.addEventListener("loadedmetadata", draw);
+    if (reviewVideo.readyState >= 1) draw();
+  }
 }
 
 function playDelivery(delivery) {
@@ -539,8 +574,8 @@ function currentDelivery() {
 
 async function sendMachine() {
   const delivery = currentDelivery();
-  if (!delivery?.pitch) {
-    setStatus("Mark the pitch first.");
+  if (!delivery?.pitch?.line) {
+    setStatus("Set the line on the pitch map. A side camera measures length only.");
     return;
   }
   const pace = $("pace-input").value;
@@ -624,6 +659,154 @@ function seekVideo(video, time) {
   });
 }
 
+const SIDE_STEPS = [
+  { key: "bowling", text: "Click the bowling crease where it meets the pitch." },
+  { key: "batting", text: "Click the batting crease where it meets the pitch." },
+  { key: "stump_top", text: "Click the top of the off stump." },
+];
+const BEHIND_STEPS = [
+  { key: "c0", text: "Click the off-side corner at the bowler's end." },
+  { key: "c1", text: "Click the leg-side corner at the bowler's end." },
+  { key: "c2", text: "Click the leg-side corner at the batter's end." },
+  { key: "c3", text: "Click the off-side corner at the batter's end." },
+];
+
+function startCalibration() {
+  const video = $("review-video");
+  if (!video) {
+    setStatus("Calibration needs a video.");
+    return;
+  }
+  video.pause();
+  const behind = state.reviewCamera === "behind";
+  state.calib = { camera: state.reviewCamera, steps: behind ? BEHIND_STEPS : SIDE_STEPS, index: 0, points: {} };
+  setStatus(state.calib.steps[0].text);
+}
+
+function onVideoClick(event, video) {
+  if (!state.calib) return;
+  event.preventDefault();
+  const rect = video.getBoundingClientRect();
+  const point = {
+    x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+    y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+  };
+  const step = state.calib.steps[state.calib.index];
+  state.calib.points[step.key] = point;
+  state.calib.index += 1;
+  if (state.calib.index < state.calib.steps.length) {
+    setStatus(state.calib.steps[state.calib.index].text);
+    return;
+  }
+  submitCalibration();
+}
+
+async function submitCalibration() {
+  const calib = state.calib;
+  state.calib = null;
+  const body = { kind: calib.camera === "behind" ? "behind" : "side" };
+  if (body.kind === "behind") {
+    body.corners = [calib.points.c0, calib.points.c1, calib.points.c2, calib.points.c3];
+  } else {
+    body.bowling = calib.points.bowling;
+    body.batting = calib.points.batting;
+    body.stump_top = calib.points.stump_top;
+  }
+  try {
+    state.session = await api(`/api/sessions/${state.session.id}/calibration/${calib.camera}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    setStatus("Camera calibrated. Track the ball.");
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function trackBall(delivery) {
+  if (!delivery) return;
+  setStatus("Tracking the ball…");
+  try {
+    const updated = await api(`/api/sessions/${state.session.id}/deliveries/${delivery.id}/track?camera=${state.reviewCamera}`, { method: "POST" });
+    replaceDelivery(updated);
+    const pace = updated.tracking?.pace_kph ? `${updated.tracking.pace_kph} km/h` : "pace not read";
+    setStatus(`${updated.tracking?.pitch?.text || "Ball tracked"} · ${pace}`);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function markOutcome(delivery, name, button) {
+  try {
+    const updated = await api(`/api/sessions/${state.session.id}/deliveries/${delivery.id}/outcome`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ outcome: name }),
+    });
+    rememberDelivery(updated);
+    document.querySelectorAll("#outcomes button").forEach((item) => item.classList.toggle("on", item === button));
+    setStatus(`Marked ${name}`);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function applyRadar(delivery) {
+  try {
+    const reading = await api("/api/radar");
+    if (!reading.pace_kph) {
+      setStatus("No radar reading yet. Post one to /api/radar, or set CRICKCOACH_RADAR_PORT.");
+      return;
+    }
+    $("pace-input").value = reading.pace_kph;
+    await savePace(delivery);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function queueDrill() {
+  try {
+    const plan = await api("/api/drill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: state.session ? state.session.id : null }),
+    });
+    setStatus(plan.reason);
+    showView("machine");
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+function drawTrack(delivery) {
+  const canvas = $("track-overlay");
+  const video = $("review-video");
+  const points = delivery?.tracking?.points || [];
+  if (!canvas || !video || !points.length) return;
+  const rect = video.getBoundingClientRect();
+  canvas.width = Math.max(2, rect.width);
+  canvas.height = Math.max(2, rect.height);
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = "#f4ecd8";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  points.forEach((point, index) => {
+    const x = point.x * canvas.width;
+    const y = point.y * canvas.height;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  const last = points[points.length - 1];
+  ctx.fillStyle = "#e36b4a";
+  ctx.beginPath();
+  ctx.arc(last.x * canvas.width, last.y * canvas.height, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 async function deleteSession(id) {
   if (!window.confirm("Delete this session and its video?")) return;
   await api(`/api/sessions/${id}`, { method: "DELETE" });
@@ -689,6 +872,21 @@ async function watchRecording(id) {
   setStatus("The recording is still running. Open it from the list in a moment.");
 }
 
+$("demo-tracked").addEventListener("click", async () => {
+  setStatus("Tracking a sample ball…");
+  try {
+    state.session = await api("/api/demo/tracked", { method: "POST" });
+    state.deliveryId = state.session.deliveries[0]?.id || null;
+    state.reviewCamera = "side";
+    const delivery = state.session.deliveries[0];
+    setStatus(delivery?.tracking?.pitch?.text || state.session.error || "Tracked");
+    renderReview();
+    refreshSessions();
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
 $("demo-session").addEventListener("click", async () => {
   setStatus("Building a sample clip…");
   try {
@@ -704,11 +902,15 @@ $("demo-session").addEventListener("click", async () => {
 
 async function refreshMachine() {
   const data = await api("/api/machine");
+  const radar = $("radar-line");
+  if (radar) {
+    const pace = data.radar?.pace_kph ? `${data.radar.pace_kph} km/h` : "no reading";
+    radar.textContent = `Machine: ${data.mode}. Radar: ${pace}.`;
+  }
   const root = $("machine-list");
   root.replaceChildren();
   if (!data.items.length) {
     root.innerHTML = '<p class="empty">The queue is empty.</p>';
-    return;
   }
   for (const item of data.items) {
     const row = document.createElement("div");
@@ -725,7 +927,43 @@ async function refreshMachine() {
     row.appendChild(remove);
     root.appendChild(row);
   }
+  const bowled = $("bowled-list");
+  if (!bowled) return;
+  bowled.replaceChildren();
+  if (!data.bowled?.length) {
+    bowled.innerHTML = '<p class="empty">Nothing bowled yet.</p>';
+    return;
+  }
+  for (const item of data.bowled) {
+    const row = document.createElement("div");
+    row.className = "ball-row";
+    const pace = item.pace_kph ? `${item.pace_kph} km/h` : "pace open";
+    row.innerHTML = `<div><strong>${esc(item.length)} on ${esc(item.line)}</strong><span>${esc(pace)} · ${esc(item.via || "")}</span></div>`;
+    bowled.appendChild(row);
+  }
 }
+
+$("bowl-next").addEventListener("click", async () => {
+  try {
+    const bowled = await api("/api/machine/bowl", { method: "POST" });
+    setStatus(`Bowled ${bowled.length} on ${bowled.line} via ${bowled.via}`);
+    refreshMachine();
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+$("bowl-all").addEventListener("click", async () => {
+  try {
+    const result = await api("/api/machine/bowl-all", { method: "POST" });
+    setStatus(`Bowled ${result.bowled.length} balls`);
+    refreshMachine();
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+$("queue-drill").addEventListener("click", () => queueDrill());
 
 $("machine-form").addEventListener("submit", async (event) => {
   event.preventDefault();
