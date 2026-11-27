@@ -12,14 +12,16 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from crickcoach import NAME, ORIGIN, __version__
 from crickcoach.cues import coach, parse_frames
 from crickcoach.drill import drill_plan
 from crickcoach.flight import analyse_clip
+from crickcoach.footage import copy_clip
 from crickcoach.machine_link import MachineLink, listen_radar
 from crickcoach.pitch import LENGTHS, LINES, describe_pitch
 from crickcoach.samples import CATALOG, sample_payload
 from crickcoach.store import Store, check_delivery_id, now_iso
-from crickcoach.video import cut_video, record_rtsp, synthesize_two_deliveries, write_tracked_sample
+from crickcoach.video import cut_video, record_rtsp
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = Path(__file__).resolve().parent / "web"
@@ -99,12 +101,12 @@ OUTCOMES = ("left", "defended", "attacked", "missed", "edged", "hit")
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
-    store = Store(data_dir or Path(os.environ.get("CRICKCOACH_DATA", ROOT / "data")))
-    app = FastAPI(title="CrickCoach", version="0.2.0")
+    store = Store(data_dir or Path(_setting("VANSH_DATA", "CRICKCOACH_DATA", default=str(ROOT / "data"))))
+    app = FastAPI(title=NAME, version=__version__)
     app.state.store = store
-    app.state.machine = MachineLink(os.environ.get("CRICKCOACH_MACHINE"))
+    app.state.machine = MachineLink(_setting("VANSH_MACHINE", "CRICKCOACH_MACHINE"))
     app.state.radar = {"pace_kph": None, "at": None}
-    radar_port = os.environ.get("CRICKCOACH_RADAR_PORT")
+    radar_port = _setting("VANSH_RADAR_PORT", "CRICKCOACH_RADAR_PORT")
     if radar_port and radar_port.isdigit():
         threading.Thread(
             target=listen_radar,
@@ -125,6 +127,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             detail = str(exc)
         return {
             "ok": True,
+            "name": NAME,
+            "origin": ORIGIN,
             "ffmpeg": ffmpeg_ok,
             "detail": detail,
             "machine": app.state.machine.mode,
@@ -221,39 +225,15 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/demo/session")
     def demo_session() -> dict:
-        session = store.create_session(name="Sample net clip", role="bowling", status="processing")
-        path = store.folder(session["id"]) / "side.mp4"
-        try:
-            synthesize_two_deliveries(path)
-            session["cameras"]["side"] = "side.mp4"
-            segments = cut_video(path)
-            session["deliveries"] = [
-                _delivery(index, segment.t0, segment.t1, note=segment.note)
-                for index, segment in enumerate(segments, start=1)
-            ]
-            session["status"] = "ready"
-        except Exception as exc:
-            session["status"] = "error"
-            session["error"] = str(exc)
-        return store.save(session)
+        return _raw_session(store, "side_two_balls", "VANSH raw side clip", camera="side", cut=True)
 
     @app.post("/api/demo/tracked")
     def demo_tracked() -> dict:
-        session = store.create_session(name="Tracked sample ball", role="bowling", status="processing")
-        path = store.folder(session["id"]) / "side.mp4"
-        try:
-            sample = write_tracked_sample(path)
-            session["cameras"]["side"] = "side.mp4"
-            session["calibration"]["side"] = sample["calibration"]
-            delivery = _delivery(1, 0.0, sample["duration"])
-            measured = analyse_clip(path, delivery["t0"], delivery["t1"], sample["calibration"])
-            _apply_tracking(delivery, measured)
-            session["deliveries"] = [delivery]
-            session["status"] = "ready"
-        except Exception as exc:
-            session["status"] = "error"
-            session["error"] = str(exc)
-        return store.save(session)
+        return _raw_session(store, "side_good_length", "VANSH raw tracked ball", camera="side", cut=False)
+
+    @app.post("/api/demo/behind")
+    def demo_behind() -> dict:
+        return _raw_session(store, "behind_off_good", "VANSH raw behind ball", camera="behind", cut=False)
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict:
@@ -460,6 +440,42 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     app.mount("/assets", StaticFiles(directory=WEB), name="assets")
     return app
+
+
+def _setting(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return default
+
+
+def _raw_session(store: Store, clip_name: str, title: str, *, camera: str, cut: bool) -> dict:
+    session = store.create_session(name=title, role="bowling", status="processing")
+    filename = f"{camera}.mp4"
+    path = store.folder(session["id"]) / filename
+    try:
+        item = copy_clip(clip_name, path)
+        session["cameras"][camera] = filename
+        if cut:
+            segments = cut_video(path)
+            session["deliveries"] = [
+                _delivery(index, segment.t0, segment.t1, note=segment.note)
+                for index, segment in enumerate(segments, start=1)
+            ]
+        else:
+            calibration = item["calibration"]
+            session.setdefault("calibration", {"side": None, "behind": None})
+            session["calibration"][camera] = calibration
+            delivery = _delivery(1, 0.0, float(item["duration"]), camera=camera)
+            measured = analyse_clip(path, delivery["t0"], delivery["t1"], calibration)
+            _apply_tracking(delivery, measured)
+            session["deliveries"] = [delivery]
+        session["status"] = "ready"
+    except Exception as exc:
+        session["status"] = "error"
+        session["error"] = str(exc)
+    return store.save(session)
 
 
 def _record_job(store: Store, session_id: str, side_url: str, behind_url: str | None, seconds: int) -> None:

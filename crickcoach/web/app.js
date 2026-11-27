@@ -756,7 +756,7 @@ async function applyRadar(delivery) {
   try {
     const reading = await api("/api/radar");
     if (!reading.pace_kph) {
-      setStatus("No radar reading yet. Post one to /api/radar, or set CRICKCOACH_RADAR_PORT.");
+      setStatus("No radar reading yet. Post one to /api/radar, or set VANSH_RADAR_PORT.");
       return;
     }
     $("pace-input").value = reading.pace_kph;
@@ -872,27 +872,31 @@ async function watchRecording(id) {
   setStatus("The recording is still running. Open it from the list in a moment.");
 }
 
-$("demo-tracked").addEventListener("click", async () => {
-  setStatus("Tracking a sample ball…");
+$("demo-tracked").addEventListener("click", () => loadRaw("/api/demo/tracked", "side"));
+$("demo-behind").addEventListener("click", () => loadRaw("/api/demo/behind", "behind"));
+
+async function loadRaw(url, camera) {
+  setStatus("Reading the raw reel…");
   try {
-    state.session = await api("/api/demo/tracked", { method: "POST" });
+    state.session = await api(url, { method: "POST" });
     state.deliveryId = state.session.deliveries[0]?.id || null;
-    state.reviewCamera = "side";
+    state.reviewCamera = camera;
     const delivery = state.session.deliveries[0];
-    setStatus(delivery?.tracking?.pitch?.text || state.session.error || "Tracked");
+    setStatus(delivery?.tracking?.pitch?.text || delivery?.cut_note || state.session.error || "Reel ready");
     renderReview();
     refreshSessions();
   } catch (error) {
     setStatus(error.message);
   }
-});
+}
 
 $("demo-session").addEventListener("click", async () => {
-  setStatus("Building a sample clip…");
+  setStatus("Cutting the raw side reel…");
   try {
     state.session = await api("/api/demo/session", { method: "POST" });
     state.deliveryId = state.session.deliveries[0]?.id || null;
-    setStatus(`${state.session.deliveries.length} deliveries in the sample clip`);
+    state.reviewCamera = "side";
+    setStatus(`${state.session.deliveries.length} deliveries in the raw side reel`);
     renderReview();
     refreshSessions();
   } catch (error) {

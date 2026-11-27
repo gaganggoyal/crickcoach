@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CrickCoach</title>
+  <title>VANSH</title>
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
@@ -11,8 +11,8 @@
     <div class="brand">
       <span class="ball" aria-hidden="true"></span>
       <div>
-        <p class="name">CrickCoach</p>
-        <p class="tag">Net coach</p>
+        <p class="name">VANSH</p>
+        <p class="tag"><a href="https://vansh.best">vansh.best</a></p>
       </div>
     </div>
     <nav>
@@ -43,7 +43,7 @@
     </aside>
     <form id="lane-controls" class="controls">
       <label>Player
-        <input id="player-name" name="player" value="Net session" autocomplete="off">
+        <input id="player-name" name="player" value="VANSH net" autocomplete="off">
       </label>
       <label>Person in frame
         <select id="person">
@@ -69,7 +69,7 @@
     <div class="session-tools">
       <form id="upload-form">
         <h2>Upload a net video</h2>
-        <label>Name <input name="name" value="Net session" required></label>
+        <label>Name <input name="name" value="VANSH net" required></label>
         <label>Role
           <select name="role">
             <option value="bowling">Bowling</option>
@@ -82,7 +82,7 @@
       </form>
       <form id="camera-form">
         <h2>Record from CCTV</h2>
-        <label>Name <input name="name" value="Camera take"></label>
+        <label>Name <input name="name" value="VANSH take"></label>
         <label>Role
           <select name="role">
             <option value="bowling">Bowling</option>
@@ -95,21 +95,22 @@
         <button type="submit">Record</button>
       </form>
       <div class="buttons">
-        <button type="button" id="demo-session" class="ghost">Load a sample clip</button>
-        <button type="button" id="demo-tracked" class="ghost">Load a tracked ball</button>
+        <button type="button" id="demo-session" class="ghost">Load raw side clip</button>
+        <button type="button" id="demo-tracked" class="ghost">Load raw tracked ball</button>
+        <button type="button" id="demo-behind" class="ghost">Load raw behind ball</button>
       </div>
       <p id="progress" class="note"></p>
       <div id="session-list" class="session-list"></div>
     </div>
     <div id="review" class="review">
-      <p class="empty">Upload a side-on video, record the cameras, or load the sample clip.</p>
+      <p class="empty">Upload a side-on video, record the cameras, or load a raw reel.</p>
     </div>
   </section>
 
   <section id="view-machine" class="view" hidden>
     <form id="machine-form" class="machine-form">
       <h2>Queue a ball</h2>
-      <p class="hint">Bowl next sends the queue to the machine. With no machine address, the simulator records each ball. Set CRICKCOACH_MACHINE=host:8520 for a real feeder.</p>
+      <p class="hint">Bowl next sends the queue to the machine. With no machine address, the simulator records each ball. Set VANSH_MACHINE=host:8520 for a real feeder.</p>
       <label>Pace km/h <input name="pace_kph" type="number" min="40" max="180" step="1" placeholder="125"></label>
       <label>Line
         <select name="line">

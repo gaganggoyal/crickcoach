@@ -216,6 +216,55 @@ def write_tracked_sample(path: Path) -> dict:
     }
 
 
+def write_behind_sample(path: Path) -> dict:
+    """A behind-the-bowler clip. The ball kinks on a good length, off stump."""
+    width, height, fps = 320, 180, 50
+    frames = []
+    for index in range(fps):
+        buffer = bytearray([22]) * (width * height)
+        for corner in ((0.2, 0.8), (0.8, 0.8), (0.8, 0.2), (0.2, 0.2)):
+            _paint(buffer, width, height, int(corner[0] * width), int(corner[1] * height), 80, 2)
+        center_x, center_y = _behind_ball(index, width, height)
+        _paint(buffer, width, height, center_x, center_y, 250, 4)
+        frames.append(bytes(buffer))
+    encode_gray(frames, width, height, fps, path)
+    return {
+        "duration": 1.0,
+        "calibration": {
+            "kind": "behind",
+            "corners": [
+                {"x": 0.2, "y": 0.8},
+                {"x": 0.8, "y": 0.8},
+                {"x": 0.8, "y": 0.2},
+                {"x": 0.2, "y": 0.2},
+            ],
+        },
+    }
+
+
+def _behind_ball(index: int, width: int, height: int) -> tuple[int, int]:
+    moment = index / 50
+    if moment <= 0.4:
+        phase = moment / 0.4
+        x = 0.20 + 0.18 * phase
+        y = 0.80 - 0.33 * phase
+    else:
+        phase = min((moment - 0.4) / 0.35, 1)
+        x = 0.38 + 0.24 * phase
+        y = 0.47 - 0.07 * phase
+    return int(x * width), int(y * height)
+
+
+def _paint(buffer: bytearray, width: int, height: int, center_x: int, center_y: int, value: int, radius: int) -> None:
+    for y in range(center_y - radius, center_y + radius):
+        if not 0 <= y < height:
+            continue
+        row = y * width
+        for x in range(center_x - radius, center_x + radius):
+            if 0 <= x < width:
+                buffer[row + x] = value
+
+
 def _sample_ball(index: int) -> tuple[int, int]:
     if index <= 24:
         phase = index / 24

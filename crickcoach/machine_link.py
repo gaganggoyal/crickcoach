@@ -1,6 +1,6 @@
 """Send a queued ball to a bowling machine.
 
-With no address set, CrickCoach keeps the ball in a local bowled log. That is
+With no address set, VANSH keeps the ball in a local bowled log. That is
 the simulator. A real machine speaks one JSON object per line on a TCP port:
 
     {"cmd": "bowl", "id": "ab12cd34", "pace_kph": 125, "line": "off", "length": "good"}

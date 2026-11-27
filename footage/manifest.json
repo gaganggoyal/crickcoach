@@ -1,0 +1,73 @@
+{
+  "coach": "VANSH",
+  "origin": "https://vansh.best",
+  "clips": {
+    "side_two_balls": {
+      "file": "side_two_balls.mp4",
+      "camera": "side",
+      "note": "Two deliveries with a quiet gap between them.",
+      "expect": {
+        "deliveries": 2
+      }
+    },
+    "side_good_length": {
+      "file": "side_good_length.mp4",
+      "camera": "side",
+      "note": "One side-on ball pitching on a good length.",
+      "expect": {
+        "length": "good",
+        "pace_min": 40,
+        "pace_max": 180,
+        "hit_stumps": false
+      },
+      "duration": 1.0,
+      "calibration": {
+        "kind": "side",
+        "bowling": {
+          "x": 0.125,
+          "y": 0.7777777777777778
+        },
+        "batting": {
+          "x": 0.875,
+          "y": 0.8333333333333334
+        },
+        "stump_top": {
+          "x": 0.875,
+          "y": 0.6111111111111112
+        }
+      }
+    },
+    "behind_off_good": {
+      "file": "behind_off_good.mp4",
+      "camera": "behind",
+      "note": "One ball from behind the bowler, good length on off stump.",
+      "expect": {
+        "line": "off",
+        "length": "good",
+        "hit_stumps": false
+      },
+      "duration": 1.0,
+      "calibration": {
+        "kind": "behind",
+        "corners": [
+          {
+            "x": 0.2,
+            "y": 0.8
+          },
+          {
+            "x": 0.8,
+            "y": 0.8
+          },
+          {
+            "x": 0.8,
+            "y": 0.2
+          },
+          {
+            "x": 0.2,
+            "y": 0.2
+          }
+        ]
+      }
+    }
+  }
+}

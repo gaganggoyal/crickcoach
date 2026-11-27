@@ -1,6 +1,6 @@
-# CrickCoach
+# VANSH
 
-CrickCoach is a net-side cricket coach. Two fixed cameras watch a session. Each ball is cut out, the body is read for three coaching cues, and the ball is tracked for pace, line, and length. Misses become the next drill, and that drill is sent to a bowling machine.
+VANSH is the net coach at [vansh.best](https://vansh.best). Two fixed cameras watch a session. Each ball is cut out, the body is read for three coaching cues, and the ball is tracked for pace, line, and length. Misses become the next drill, and that drill is sent to a bowling machine.
 
 ## Run
 
@@ -11,7 +11,7 @@ pip install -r requirements.txt
 python -m crickcoach
 ```
 
-Open http://127.0.0.1:8000
+Open http://127.0.0.1:8000. The deployed coach is https://vansh.best.
 
 A phone or tablet on the same network can use the screen if you start it with:
 
@@ -27,7 +27,13 @@ Anyone who can reach that address can start a camera recording, so use it on the
 - **Sessions.** Upload the side-camera video. An optional second file is the camera behind the bowler. The clip is cut on motion, one window per delivery. **Read the action** measures the body. **Calibrate camera**, then **Track the ball**, measures the flight. Mark how the batter played it: left, defended, attacked, missed, edged, or hit.
 - **Machine.** The queue is line, length, and pace. **Queue the next drill** looks at the misses and repeats the length that beat the batter. **Bowl next** sends a ball. With no machine address this is a simulator, and the ball moves to the bowled list.
 
-**Load a tracked ball** is a side-on clip with a known pitch. It should come back as a good length with a pace. **Load a sample clip** has two bursts of motion and no player, so the action reader reports that nobody is in frame.
+The raw test reels live in `footage/` and are what the coach is checked against:
+
+- `side_two_balls.mp4` is two deliveries with a quiet gap. **Load raw side clip** cuts it into two balls.
+- `side_good_length.mp4` is one side-on ball. **Load raw tracked ball** reads a good length and a pace.
+- `behind_off_good.mp4` is one ball from behind the bowler. **Load raw behind ball** reads good length on off stump.
+
+`footage/manifest.json` holds the calibration and the result each reel must produce. The reels have no player in them, so **Read the action** reports that nobody is in frame.
 
 ## Ball tracking
 
@@ -51,10 +57,24 @@ A machine listens for one JSON line and replies with one JSON line:
 ```
 
 ```bash
-CRICKCOACH_MACHINE=192.168.1.50:8520 python -m crickcoach
+VANSH_MACHINE=192.168.1.50:8520 python -m crickcoach
 ```
 
-`serve` in `crickcoach/machine_link.py` is a reference listener a bridge can copy. Leave `CRICKCOACH_MACHINE` unset to bowl into the simulator.
+`VANSH_DATA` and `VANSH_RADAR_PORT` are the matching settings. The older `CRICKCOACH_*` names still work.
+
+## vansh.best
+
+Point the DNS for vansh.best at the net computer, then proxy HTTPS to the app:
+
+```
+vansh.best {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+The coach already calls itself VANSH and uses https://vansh.best as its public address.
+
+`serve` in `crickcoach/machine_link.py` is a reference listener a bridge can copy. Leave `VANSH_MACHINE` unset to bowl into the simulator.
 
 ## Cameras
 
