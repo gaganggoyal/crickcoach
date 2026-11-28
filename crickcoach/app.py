@@ -6,6 +6,7 @@ import ipaddress
 import os
 import re
 import secrets
+import shutil
 import socket
 import threading
 import time
@@ -19,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from crickcoach import NAME, ORIGIN, __version__
+from crickcoach import certificate as cert
+from crickcoach.assess import AGE_GROUPS, DISCIPLINES, assess
 from crickcoach.auth import COOKIE, DAYS, Auth
 from crickcoach.cues import coach, parse_frames
 from crickcoach.drill import drill_plan
@@ -26,15 +29,18 @@ from crickcoach.footage import copy_clip
 from crickcoach.geometry import ground_plane, side_plane
 from crickcoach.guide import DOCS
 from crickcoach.guide import render as render_guide
+from crickcoach.home import render as render_home
 from crickcoach.machine_link import MachineLink, command_for, listen_radar
 from crickcoach.pitch import LENGTHS, LINES, clean_line, describe, target_for
 from crickcoach.process import Busy, recover, refresh, submit, track_one
 from crickcoach.samples import CATALOG, sample_payload
 from crickcoach.store import Store, check_delivery_id, now_iso
+from crickcoach.verify import certificate_page, lookup_page
 from crickcoach.video import redact
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = Path(__file__).resolve().parent / "web"
+FONTS = Path(__file__).resolve().parent / "fonts"
 MAX_BYTES = 600 * 1024 * 1024
 VIDEO_TYPES = {
     ".mp4": "video/mp4",
@@ -49,6 +55,8 @@ SIDE_KEYS = ("bowler_base", "bowler_top", "batter_base", "batter_top")
 SERIES_ID = re.compile(r"^r[a-f0-9]{8}$")
 RECORDING = ("starting", "recording")
 ONLINE_S = 40
+MAX_LOGO_BYTES = 3 * 1024 * 1024
+NOINDEX = {"X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-cache"}
 
 
 class LiveBody(BaseModel):
@@ -143,6 +151,24 @@ class CameraCheckBody(BaseModel):
     cameras: dict = Field(default_factory=dict)
 
 
+class AssessBody(BaseModel):
+    source: str = Field(max_length=40)
+    player: str = Field(default="", max_length=80)
+    discipline: str = "pace"
+    age_group: str = "open"
+
+
+class AcademyBody(BaseModel):
+    name: str = Field(default="", max_length=80)
+    city: str = Field(default="", max_length=50)
+    coach: str = Field(default="", max_length=70)
+    role: str = Field(default="", max_length=50)
+
+
+class RevokeBody(BaseModel):
+    reason: str = Field(default="", max_length=200)
+
+
 class LoginBody(BaseModel):
     key: str = Field(max_length=200)
 
@@ -174,6 +200,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     app.state.radar = {"pace_kph": None, "at": None}
     app.state.wake = threading.Condition()
     max_bytes = int(float(_setting("VANSH_MAX_GB", default="20")) * 1024**3)
+    origin = _setting("VANSH_ORIGIN", default=ORIGIN)
+    zone = _setting("VANSH_TIMEZONE", default="Asia/Kolkata")
     allow_rtsp = _flag("VANSH_ALLOW_RTSP", default=not auth.required)
     rtsp_private = _flag("VANSH_RTSP_PRIVATE", default=not auth.required)
     radar_port = _setting("VANSH_RADAR_PORT", "CRICKCOACH_RADAR_PORT")
@@ -833,11 +861,129 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         store.add_bowled(record)
         return record
 
-    # -- the page -----------------------------------------------------------------
+    # -- assessments and certificates ----------------------------------------------
+    #
+    # The coach scores a recorded spell and issues a certificate. The score is
+    # always worked out here, from the cameras' readings, never sent by the
+    # page, and the certificate keeps the score it was issued with.
+
+    @app.get("/api/academy")
+    def get_academy() -> dict:
+        return store.academy()
+
+    @app.put("/api/academy")
+    def put_academy(body: AcademyBody) -> dict:
+        try:
+            academy = {
+                "name": cert.clean_text(body.name, limit=70, what="academy's name"),
+                "city": cert.clean_text(body.city, limit=40, what="city"),
+                "coach": cert.clean_text(body.coach, limit=60, what="coach's name"),
+                "role": cert.clean_text(body.role, limit=40, what="coach's title"),
+            }
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return store.save_academy(academy)
+
+    @app.get("/api/academy/logo")
+    def get_logo() -> FileResponse:
+        if not store.logo_path.exists():
+            raise HTTPException(404, "No logo yet.")
+        return FileResponse(store.logo_path, media_type="image/png")
+
+    @app.post("/api/academy/logo")
+    async def put_logo(logo: UploadFile = File(...)) -> dict:
+        data = await logo.read(MAX_LOGO_BYTES + 1)
+        if len(data) > MAX_LOGO_BYTES:
+            raise HTTPException(413, "Use a logo smaller than 3 MB.")
+        try:
+            cleaned = cert.clean_logo(data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        store.save_logo(cleaned)
+        return store.academy()
+
+    @app.delete("/api/academy/logo")
+    def remove_logo() -> dict:
+        store.save_logo(None)
+        return store.academy()
+
+    @app.post("/api/assess")
+    def assess_spell(body: AssessBody) -> dict:
+        player, source, result = _assessment(store, body, need_player=False)
+        return {"player": player, "source": source, "assessment": result}
+
+    @app.get("/api/certificates")
+    def list_certificates() -> dict:
+        return {"certificates": [_certificate_view(record, zone) for record in store.list_certificates()]}
+
+    @app.post("/api/certificates")
+    def issue_certificate(body: AssessBody) -> dict:
+        academy = store.academy()
+        if not academy["name"] or not academy["coach"]:
+            raise HTTPException(400, "Add the academy's name and the coach's name first, under Academy on the certificates.")
+        player, source, result = _assessment(store, body, need_player=True)
+        if not result["ready"]:
+            raise HTTPException(400, result["why_not"])
+        for record in store.list_certificates():
+            same = (record.get("source") or {}).get("id") == source["id"] and record["player"] == player
+            if same and not record.get("revoked") and record["assessment"]["discipline"] == result["discipline"] \
+                    and record["assessment"]["age_group"] == result["age_group"]:
+                return {**_certificate_view(record, zone), "existing": True}
+        record = store.add_certificate(
+            {
+                "version": 1,
+                "issued": now_iso(),
+                "player": player,
+                "assessment": result,
+                "academy": {field: academy[field] for field in ("name", "city", "coach", "role")},
+                "recorded": source["recorded"],
+                "source": source,
+                "revoked": None,
+            },
+            cert.new_code,
+        )
+        if store.logo_path.exists():
+            shutil.copyfile(store.logo_path, store.certificate_folder(record["id"]) / "logo.png")
+        _render_certificate(store, record, origin=origin, zone=zone)
+        return {**_certificate_view(record, zone), "existing": False}
+
+    @app.post("/api/certificates/{code}/revoke")
+    def revoke_certificate(code: str, body: RevokeBody) -> dict:
+        parsed = cert.parse(code)
+        reason = " ".join(body.reason.split())
+
+        def change(record: dict) -> None:
+            if not record.get("revoked"):
+                record["revoked"] = {"at": now_iso(), "reason": reason}
+
+        try:
+            record = store.update_certificate(parsed or "", change)
+        except KeyError:
+            raise HTTPException(404, "No certificate has that ID.") from None
+        _render_certificate(store, record, origin=origin, zone=zone)
+        return _certificate_view(record, zone)
+
+    @app.delete("/api/certificates/{code}")
+    def delete_certificate(code: str) -> dict:
+        try:
+            store.delete_certificate(cert.parse(code) or "")
+        except KeyError:
+            raise HTTPException(404, "No certificate has that ID.") from None
+        return {"ok": True}
+
+    # -- the pages ----------------------------------------------------------------
 
     @app.get("/")
-    def index() -> FileResponse:
+    def home() -> HTMLResponse:
+        return HTMLResponse(render_home(origin))
+
+    @app.get("/coach")
+    def coach_screen() -> FileResponse:
         return FileResponse(WEB / "index.html")
+
+    @app.get("/coach/")
+    def coach_redirect() -> RedirectResponse:
+        return RedirectResponse("/coach", status_code=307)
 
     @app.get("/favicon.ico")
     def favicon() -> Response:
@@ -853,7 +999,53 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
     def setup_page() -> HTMLResponse:
         return HTMLResponse(render_guide())
 
+    # -- verifying a certificate, open to anyone -------------------------------------
+
+    @app.get("/verify")
+    def verify_lookup(id: str = "") -> Response:
+        if id.strip():
+            code = cert.parse(id)
+            if code is None:
+                return HTMLResponse(lookup_page(id[:24], "bad"), status_code=400, headers=NOINDEX)
+            return RedirectResponse(f"/verify/{cert.show(code)}", status_code=303)
+        return HTMLResponse(lookup_page())
+
+    @app.get("/verify/{code}")
+    def verify_certificate(code: str) -> Response:
+        parsed = cert.parse(code)
+        if parsed is None:
+            return HTMLResponse(lookup_page(code[:24], "bad"), status_code=404, headers=NOINDEX)
+        if code != cert.show(parsed):
+            return RedirectResponse(f"/verify/{cert.show(parsed)}", status_code=308)
+        try:
+            record = store.certificate(parsed)
+        except KeyError:
+            return HTMLResponse(lookup_page(cert.show(parsed), "missing"), status_code=404, headers=NOINDEX)
+        return HTMLResponse(certificate_page(record, zone=zone), headers=NOINDEX)
+
+    def certificate_file(code: str, kind: str, download: bool) -> FileResponse:
+        parsed = cert.parse(code)
+        try:
+            record = store.certificate(parsed or "")
+        except KeyError:
+            raise HTTPException(404, "No certificate has that ID.") from None
+        path = store.certificate_folder(record["id"]) / f"certificate.{kind}"
+        if not path.exists():
+            _render_certificate(store, record, origin=origin, zone=zone)
+        name = f"VANSH-certificate-{cert.show(record['id'])}.{kind}"
+        return FileResponse(path, media_type="image/png" if kind == "png" else "application/pdf",
+                            filename=name if download else None, headers=NOINDEX)
+
+    @app.get("/verify/{code}/certificate.png")
+    def certificate_png(code: str, download: bool = False) -> FileResponse:
+        return certificate_file(code, "png", download)
+
+    @app.get("/verify/{code}/certificate.pdf")
+    def certificate_pdf(code: str, download: bool = False) -> FileResponse:
+        return certificate_file(code, "pdf", download)
+
     app.mount("/setup/img", StaticFiles(directory=DOCS / "img"), name="guide-img")
+    app.mount("/fonts", StaticFiles(directory=FONTS), name="fonts")
     app.mount("/assets", StaticFiles(directory=WEB), name="assets")
     return app
 
@@ -894,6 +1086,96 @@ CAMERA_FIELDS = {
     "ok": bool, "recording": bool, "codec": str, "width": int, "height": int, "fps": float, "fps_camera": float,
     "keyframe_s": float, "kbps": int, "missing_frames": int, "error": str,
 }
+
+
+def _assessment(store: Store, body: AssessBody, *, need_player: bool) -> tuple[str, dict, dict]:
+    """The score analysis for the recording the coach chose, worked out from the cameras' readings."""
+    if body.discipline not in DISCIPLINES:
+        raise HTTPException(400, "Choose pace or spin bowling.")
+    if body.age_group not in AGE_GROUPS:
+        raise HTTPException(400, "Choose an age group from the list.")
+    player = ""
+    if need_player or body.player.strip():
+        try:
+            player = cert.clean_name(body.player)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+    balls, source, busy = _assessment_balls(store, body.source)
+    result = assess(balls, discipline=body.discipline, age_group=body.age_group)
+    if busy:
+        result["ready"] = False
+        result["why_not"] = "VANSH is still tracking this recording. Wait for it to finish, then assess again."
+    return player, source, result
+
+
+def _assessment_balls(store: Store, source: str) -> tuple[list[dict], dict, bool]:
+    """Every ball of a recording (all its takes) or of one session, in the order they were bowled."""
+    kind, _, ident = (source or "").partition(":")
+    if kind == "series" and SERIES_ID.fullmatch(ident):
+        takes = sorted((item for item in store.list_sessions() if (item.get("series") or {}).get("id") == ident),
+                       key=lambda item: item["series"]["take"])
+        sessions = []
+        for take in takes:
+            try:
+                sessions.append(store.get(take["id"]))
+            except KeyError:
+                continue
+        if not sessions:
+            raise HTTPException(404, "That recording has no takes yet.")
+        name = sessions[0]["series"]["name"]
+    elif kind == "session":
+        session = _session_or_404(store, ident)
+        sessions = [session]
+        series = session.get("series")
+        name = f"{series['name']} · take {series['take']}" if series else session["name"]
+    else:
+        raise HTTPException(400, "Choose a recording to assess.")
+    balls = []
+    for session in sessions:
+        for delivery in sorted(session.get("deliveries") or [], key=lambda item: float(item.get("t0") or 0)):
+            balls.append({**delivery, "batter": session.get("batter", "right")})
+    info = {"kind": kind, "id": ident, "name": name, "recorded": sessions[0]["created"],
+            "sessions": [session["id"] for session in sessions]}
+    return balls, info, any(session.get("job") for session in sessions)
+
+
+def _render_certificate(store: Store, record: dict, *, origin: str, zone: str) -> None:
+    """Draw the certificate's picture and PDF next to its record."""
+    import uuid
+
+    folder = store.certificate_folder(record["id"])
+    logo = folder / "logo.png"
+    image = cert.render(record, origin=origin, logo=logo if logo.exists() else None, zone=zone)
+    for name, data in (("certificate.png", cert.png_bytes(image)), ("certificate.pdf", cert.pdf_bytes(image, record))):
+        temporary = folder / f".{name}.{uuid.uuid4().hex[:6]}.tmp"
+        temporary.write_bytes(data)
+        temporary.replace(folder / name)
+
+
+def _certificate_view(record: dict, zone: str) -> dict:
+    code = cert.show(record["id"])
+    result = record["assessment"]
+    source = record.get("source") or {}
+    return {
+        "id": record["id"],
+        "code": code,
+        "player": record["player"],
+        "discipline": result["discipline"],
+        "discipline_name": result["discipline_name"],
+        "age_group": result["age_group"],
+        "age_group_name": result["age_group_name"],
+        "score": result["score"],
+        "level": result["level"],
+        "level_name": result["level_name"],
+        "issued": record["issued"],
+        "issued_on": cert.local_date(record["issued"], zone),
+        "recorded": record.get("recorded"),
+        "revoked": record.get("revoked"),
+        "source": {"kind": source.get("kind"), "id": source.get("id"), "name": source.get("name")},
+        "url": f"/verify/{code}",
+        "png": f"/verify/{code}/certificate.png",
+        "pdf": f"/verify/{code}/certificate.pdf",
+    }
 
 
 def _camera_reports(cameras: dict) -> dict:

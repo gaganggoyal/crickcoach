@@ -1,4 +1,4 @@
-# Set up VANSH at your nets
+# Set up VANSH, *the robo coach*, at your nets
 
 This guide takes a cricket net from no cameras to a coach screen that measures every ball. It covers what to buy, where each camera goes, how to set it, how to connect it, and how to check the numbers. The same guide, with a placement calculator and a camera address builder, is at [vansh.best/setup](https://vansh.best/setup/).
 
@@ -166,7 +166,7 @@ To test an address by hand, open it in VLC (Media → Open Network Stream). The 
 
 The bridge is a small program on a computer at the nets. It does four things:
 
-- **Waits.** It does nothing until the coach presses **Start recording** on vansh.best.
+- **Waits.** It does nothing until the coach presses **Start recording** on the coach screen, [vansh.best/coach](https://vansh.best/coach).
 - **Records.** It records both cameras without a break, in 90-second takes. It keeps the cameras' own video rather than re-encoding it, so even a small computer keeps up.
 - **Sends.** Each take goes to vansh.best as soon as it is finished. If the internet drops, takes wait on the computer's disk, up to 20 GB, and go when it is back.
 - **Reports.** It shows the coach screen which cameras it can see, their picture size and frame rate, and how many takes are waiting.
@@ -303,6 +303,8 @@ VANSH measures with geometry and physics, and every reading says how sure it is.
 - **Line.** Put a ball-sized marker in front of off stump, and check that balls landing on it show on off stump.
 - **Pace.** Compare 20 balls with a radar gun.
 
+One calibration serves every ball until the camera moves, so a click that is slightly off moves every ball the same way. In a test spell with clicks 1.5 pixels out, the side camera read every ball about 0.36 m short and about 7 km/h fast; with exact clicks, the same balls were within 0.15 m. If the cones disagree by more than about 0.2 m, or the radar by more than about 3 km/h, calibrate again, using the magnifier on the exact foot and top of each set of stumps. Do these checks before you issue certificates (section 11), because a certificate prints the numbers.
+
 These results come from rendered nets with known answers: real physics, moving players, CCTV blur, noise and video compression, and calibration clicks off by 1.5 pixels, as a coach's are. They are medians over 12 balls per row. They have not yet been checked against real footage.
 
 | Camera | Ball, frame rate, shutter | Length band right | Length error | Pace error | Line error |
@@ -311,8 +313,8 @@ These results come from rendered nets with known answers: real physics, moving p
 | Side-on, 12 m | white, 25 fps, 1/250 s | 11 of 12 | 0.11 m | 5.5 km/h | – |
 | Side-on, 12 m | red, 50 fps, 1/500 s | 11 of 12 | 0.17 m | 2.9 km/h | – |
 | Side-on, 12 m | red, 25 fps, 1/60 s | 0 of 12 | – | – | – |
-| Behind, 8 m back, 6 m up | white, 50 fps, 1/500 s | 11 of 12 | 0.12 m | – | 2.9 cm |
-| Behind, 8 m back, 6 m up | red, 25 fps, 1/250 s | 5 of 12 | 1.5 m | – | 11.7 cm |
+| Behind, 8 m back, 6 m up | white, 50 fps, 1/500 s | 11 of 12 | 0.12 m | – | 2.2 cm |
+| Behind, 8 m back, 6 m up | red, 25 fps, 1/250 s | 5 of 12 | 1.5 m | – | 9.2 cm |
 
 Two lessons come out of these numbers:
 
@@ -343,3 +345,18 @@ Two lessons come out of these numbers:
 - **Storage.** VANSH keeps the newest video within its space, 20 GB by default. When it needs room it removes the oldest videos first; their measurements, outcomes and cues stay. Delete a session to remove its video at once.
 - **The bridge's file.** `vansh-edge.env` holds camera passwords and the coach key. Keep it on the bridge computer only.
 - **Machine safety.** Follow the three safeguards in section 5.
+- **Certificates.** A certificate's verify page shows the player's name to anyone with its ID or QR code. Get a parent's consent before certifying a player under 18. Delete a certificate to remove the name.
+
+## 11. Assessments and certificates
+
+A bowler can earn a certificate from a short spell bowled for the cameras. The score is worked out from VANSH's own measurements, and anyone can check the certificate at [vansh.best/verify](https://vansh.best/verify).
+
+![A sample certificate: the academy, the player, a score of 89 out of 100 at Level 5, four measured numbers, the coach, the date, and the ID with a QR code that opens the record.](img/certificate-sample.jpg)
+
+1. **Set up the academy once.** Under **Certificates → Academy on the certificates**, add the academy's name, city, the coach's name and title, and a logo if you have one.
+2. **Record the spell.** Start a recording named after the bowler and bowl twelve balls with both cameras running. The camera behind the bowler is needed for line; without it, line is left out of the score.
+3. **Track every ball.** Make sure each take has finished tracking. VANSH certifies a spell only when the cameras placed at least 6 balls and at least two balls in three. Readings typed in by the coach do not count.
+4. **Score the spell.** Under **Certificates**, choose the recording, type the player's name as it should be printed, and choose pace or spin and the age group. The score analysis shows length, line, pace and consistency, a pitch map, strengths and what to work on.
+5. **Issue and share.** **Issue the certificate** makes an A4 PDF and a picture with a QR code. **Share** sends the verify link from a phone.
+
+The verify page explains exactly how the score is worked out. Before you issue certificates, do the checks in section 8, so the speeds and lengths printed on them are ones you trust.

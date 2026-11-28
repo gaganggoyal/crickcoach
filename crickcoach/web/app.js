@@ -41,6 +41,8 @@ const state = {
   sessions: [],
   nets: null,
   netsTakes: -1,
+  assessing: null,
+  assessFor: null,
 };
 
 const NETS_ACTIVE = ["starting", "recording", "stopping"];
@@ -167,7 +169,7 @@ function needCoach() {
 // ---------------------------------------------------------------- views
 
 function showView(name) {
-  for (const id of ["lane", "sessions", "machine"]) {
+  for (const id of ["lane", "sessions", "machine", "certificates"]) {
     $(`view-${id}`).hidden = id !== name;
   }
   document.querySelectorAll("nav button").forEach((button) => {
@@ -179,6 +181,7 @@ function showView(name) {
     refreshNets();
   }
   if (name === "machine") refreshMachine().catch((error) => setStatus(error.message));
+  if (name === "certificates") refreshCertificates().catch((error) => setStatus(error.message));
 }
 
 document.querySelectorAll("nav button").forEach((button) => {
@@ -780,6 +783,7 @@ function renderReview() {
         <div class="buttons">
           <button type="button" id="send-machine">Send this ball to the machine</button>
           <button type="button" id="queue-this-drill">Queue the next drill</button>
+          <button type="button" id="assess-this">Assess for a certificate</button>
           <button type="button" id="delete-session" class="ghost danger">Delete session</button>
         </div>
       </div>
@@ -884,6 +888,7 @@ function wireReview(session, delivery, hasVideo) {
   $("apply-radar").addEventListener("click", () => applyRadar(delivery));
   $("send-machine").addEventListener("click", () => sendMachine(delivery));
   $("queue-this-drill").addEventListener("click", () => queueDrill(session));
+  $("assess-this").addEventListener("click", () => assessRecording(session));
   $("delete-session").addEventListener("click", () => deleteSession(session.id));
   $("remove-ball")?.addEventListener("click", () => removeBall(delivery));
   if (!hasVideo) return;
@@ -1354,6 +1359,13 @@ function mapY(length) {
 }
 
 function pitchMapSvg() {
+  return `<svg id="pitch" viewBox="0 0 262 300" role="img" aria-label="Pitch map seen from behind the bowler">
+    ${pitchMapBase()}
+    <g id="pitch-balls"></g>
+  </svg>`;
+}
+
+function pitchMapBase() {
   const bands = LENGTH_BANDS.map(([from, to, name], index) => {
     const y0 = mapY(from);
     const y1 = mapY(to);
@@ -1361,17 +1373,14 @@ function pitchMapSvg() {
       <text x="${MAP.right + 2}" y="${(y0 + y1) / 2 + 3}" class="band">${name}</text>`;
   }).join("");
   const stumps = [-0.0953, 0, 0.0953].map((x) => `<circle cx="${mapX(x)}" cy="${mapY(0)}" r="1.6" fill="#f4ecd8"></circle>`).join("");
-  return `<svg id="pitch" viewBox="0 0 262 300" role="img" aria-label="Pitch map seen from behind the bowler">
-    <rect x="0" y="0" width="262" height="300" fill="#1e3a24"></rect>
+  return `<rect x="0" y="0" width="262" height="300" fill="#1e3a24"></rect>
     ${bands}
     <line x1="${mapX(-1.83)}" y1="${mapY(1.22)}" x2="${mapX(1.83)}" y2="${mapY(1.22)}" stroke="#f4ecd8" stroke-width="0.8"></line>
     <line x1="${mapX(-1.32)}" y1="${mapY(0)}" x2="${mapX(1.32)}" y2="${mapY(0)}" stroke="#f4ecd8" stroke-width="0.6"></line>
     <line x1="${mapX(-1.32)}" y1="${mapY(-0.5)}" x2="${mapX(-1.32)}" y2="${mapY(1.22)}" stroke="#f4ecd8" stroke-width="0.6"></line>
     <line x1="${mapX(1.32)}" y1="${mapY(-0.5)}" x2="${mapX(1.32)}" y2="${mapY(1.22)}" stroke="#f4ecd8" stroke-width="0.6"></line>
     <rect x="${mapX(-0.15)}" y="${mapY(0)}" width="${mapX(0.15) - mapX(-0.15)}" height="${mapY(14) - mapY(0)}" fill="rgba(244,236,216,0.10)"></rect>
-    ${stumps}
-    <g id="pitch-balls"></g>
-  </svg>`;
+    ${stumps}`;
 }
 
 function drawPitchMap(session, current) {
@@ -1585,6 +1594,332 @@ $("machine-form").addEventListener("submit", async (event) => {
     event.target.note.value = "";
     refreshMachine();
     setStatus("Ball queued");
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+// ---------------------------------------------------------------- assessments and certificates
+
+const GENERIC_NAMES = ["net session", "camera take", "live ball"];
+const POINT_COLOURS = { 2: "#f4ecd8", 1: "#e2b65c", 0: "#e36b4a" };
+const TARGETS = {
+  pace: { length: [6, 8], line: [-0.42, 0] },
+  spin: { length: [3.5, 6], line: [-0.5, 0.12] },
+};
+
+function assessRecording(session) {
+  const source = session.series ? `series:${session.series.id}` : `session:${session.id}`;
+  const name = session.series ? session.series.name : session.name;
+  state.assessFor = { source, player: GENERIC_NAMES.includes(name.trim().toLowerCase()) ? "" : name };
+  showView("certificates");
+}
+
+function assessmentSources() {
+  const found = [];
+  const bySeries = new Map();
+  for (const item of state.sessions) {
+    if (item.series) {
+      let entry = bySeries.get(item.series.id);
+      if (!entry) {
+        entry = { value: `series:${item.series.id}`, name: item.series.name, created: item.created, tracked: 0, takes: 0 };
+        bySeries.set(item.series.id, entry);
+        found.push(entry);
+      }
+      entry.tracked += item.tracked;
+      entry.takes += 1;
+      if (item.created < entry.created) entry.created = item.created;
+    } else if (item.tracked) {
+      found.push({ value: `session:${item.id}`, name: item.name, created: item.created, tracked: item.tracked, takes: 0 });
+    }
+  }
+  return found.filter((entry) => entry.tracked > 0).sort((a, b) => (a.created < b.created ? 1 : -1));
+}
+
+function shortDate(iso) {
+  return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+async function refreshCertificates() {
+  const [sessions, certificates, academy] = await Promise.all([
+    api("/api/sessions"), api("/api/certificates"), api("/api/academy"),
+  ]);
+  state.sessions = sessions.sessions;
+  fillSources();
+  renderAcademy(academy);
+  renderCertificates(certificates.certificates);
+}
+
+function fillSources() {
+  const select = $("assess-source");
+  const sources = assessmentSources();
+  const wanted = state.assessFor?.source || select.value;
+  select.replaceChildren();
+  if (!sources.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No tracked recordings yet";
+    select.appendChild(option);
+    select.disabled = true;
+    return;
+  }
+  select.disabled = false;
+  for (const entry of sources) {
+    const option = document.createElement("option");
+    option.value = entry.value;
+    const takes = entry.takes ? ` · ${plural(entry.takes, "take")}` : "";
+    option.textContent = `${entry.name} · ${shortDate(entry.created)} · ${plural(entry.tracked, "ball")} tracked${takes}`;
+    option.selected = entry.value === wanted;
+    select.appendChild(option);
+  }
+  if (state.assessFor) {
+    if (state.assessFor.player) $("assess-player").value = state.assessFor.player;
+    state.assessFor = null;
+    $("assess-result").hidden = true;
+  }
+}
+
+function assessPayload() {
+  const form = new FormData($("assess-form"));
+  return {
+    source: form.get("source") || "",
+    player: form.get("player") || "",
+    discipline: form.get("discipline"),
+    age_group: form.get("age_group"),
+  };
+}
+
+$("assess-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const payload = assessPayload();
+  try {
+    const data = await postJSON("/api/assess", payload);
+    state.assessing = { payload, data };
+    renderAssessment(data);
+    setStatus(`Scored ${data.assessment.score} / 100`);
+  } catch (error) {
+    setStatus(error.message);
+    const root = $("assess-result");
+    root.hidden = false;
+    root.innerHTML = `<p class="error">${esc(error.message)}</p>`;
+  }
+});
+
+function assessmentMap(result) {
+  const target = TARGETS[result.discipline];
+  const box = `<rect x="${mapX(target.line[0])}" y="${mapY(target.length[0])}" width="${mapX(target.line[1]) - mapX(target.line[0])}" height="${mapY(target.length[1]) - mapY(target.length[0])}" fill="rgba(30,58,36,0.16)" stroke="#1e3a24" stroke-width="1.2" stroke-dasharray="4 3"></rect>`;
+  const balls = result.balls.filter((ball) => ball.length_m != null).map((ball) => {
+    const y = mapY(ball.length_m);
+    if (ball.line_m == null) {
+      return `<line x1="${mapX(-1.4)}" y1="${y}" x2="${mapX(1.4)}" y2="${y}" stroke="${POINT_COLOURS[ball.length_points || 0]}" stroke-width="1.2" stroke-dasharray="4 3"></line>`;
+    }
+    const worst = Math.min(ball.length_points || 0, ball.line_points || 0);
+    return `<circle cx="${mapX(ball.line_m)}" cy="${y}" r="3.6" fill="${POINT_COLOURS[worst]}" stroke="#10160e" stroke-width="0.8"></circle>`;
+  }).join("");
+  return `<svg viewBox="0 0 262 300" role="img" aria-label="Where the balls of the spell pitched">${pitchMapBase()}${box}${balls}</svg>`;
+}
+
+function renderAssessment(data) {
+  const result = data.assessment;
+  const root = $("assess-result");
+  root.hidden = false;
+  const parts = result.parts.map((part) => part.measured
+    ? `<div class="part-row"><span>${esc(part.name)}</span><div class="bar"><span style="width:${part.score}%"></span></div><b>${part.score}</b><p class="part-detail">${esc(part.detail)} Counts ${Math.round(part.weight * 100)}%.</p></div>`
+    : `<div class="part-row off"><span>${esc(part.name)}</span><span>not scored</span><b>–</b><p class="part-detail">${esc(part.detail)}</p></div>`).join("");
+  const list = (title, items) => (items.length ? `<h3>${title}</h3><ul>${items.map((item) => `<li>${esc(item)}</li>`).join("")}</ul>` : "");
+  const action = result.ready
+    ? `<button type="button" class="primary" id="issue-certificate">Issue the certificate${data.player ? ` for ${esc(data.player)}` : ""}</button>`
+    : `<p class="error">${esc(result.why_not)}</p>`;
+  root.innerHTML = `
+    <div class="score-head">
+      <div class="score-big"><strong>${result.score}</strong><span>/ 100</span></div>
+      <div>
+        <p class="level">Level ${result.level} · ${esc(result.level_name)}</p>
+        <p class="note">${esc(result.discipline_name)} · ${esc(result.age_group_name)} · ${esc(data.source.name)}</p>
+      </div>
+    </div>
+    <div class="parts">${parts}</div>
+    <div class="assess-map">
+      ${assessmentMap(result)}
+      <div>
+        ${list("Strengths", result.strengths)}
+        ${list("Work on", result.work_on)}
+        <p class="note">${result.notes.map(esc).join(" ")} Off side on the left; the dashed box is the target.</p>
+      </div>
+    </div>
+    ${action}`;
+  $("issue-certificate")?.addEventListener("click", issueCertificate);
+}
+
+async function issueCertificate() {
+  if (!state.assessing) return;
+  const button = $("issue-certificate");
+  button.disabled = true;
+  try {
+    const issued = await postJSON("/api/certificates", { ...state.assessing.payload, player: $("assess-player").value });
+    renderIssued(issued);
+    setStatus(issued.existing ? `${issued.player} already has this certificate: ${issued.code}` : `Certificate ${issued.code} issued`);
+    const list = await api("/api/certificates");
+    renderCertificates(list.certificates);
+  } catch (error) {
+    setStatus(error.message);
+    button.disabled = false;
+    if (/academy/i.test(error.message)) $("academy-box").open = true;
+  }
+}
+
+function renderIssued(issued) {
+  const root = $("assess-result");
+  root.hidden = false;
+  root.innerHTML = `
+    <div class="issued">
+      <p class="good-note">${issued.existing ? "Already issued" : "Issued"}: ${esc(issued.player)}, ${issued.score} / 100, Level ${issued.level} · ${esc(issued.level_name)}. ID ${esc(issued.code)}.</p>
+      <img src="${issued.png}?v=${encodeURIComponent(issued.issued)}" width="2000" height="1414" alt="The certificate for ${esc(issued.player)}">
+      <div class="buttons">
+        <a class="button primary" href="${issued.pdf}?download=1" download>Download the PDF</a>
+        <a class="button" href="${issued.png}?download=1" download>Download the picture</a>
+        <button type="button" id="share-certificate">Share</button>
+        <a class="button ghost" href="${issued.url}" target="_blank" rel="noopener">Open the verify page</a>
+      </div>
+    </div>`;
+  $("share-certificate").addEventListener("click", () => shareCertificate(issued));
+}
+
+async function shareCertificate(item) {
+  const url = new URL(item.url, window.location.origin).href;
+  const text = `${item.player}: ${item.discipline_name} assessment, ${item.score} / 100, Level ${item.level} ${item.level_name}. Check it at`;
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: `VANSH certificate ${item.code}`, text, url });
+      return;
+    } catch (error) {
+      if (error.name === "AbortError") return;
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    setStatus("Link copied");
+  } catch {
+    window.prompt("Copy the link:", url);
+  }
+}
+
+function renderCertificates(items) {
+  const root = $("cert-list");
+  root.replaceChildren();
+  if (!items.length) {
+    root.innerHTML = '<p class="empty">No certificates yet. Score a spell to issue the first one.</p>';
+    return;
+  }
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "session-card cert-card";
+    const status = item.revoked ? ` · <span class="revoked">revoked</span>` : "";
+    card.innerHTML = `<div><strong>${esc(item.player)}</strong><span>${esc(item.discipline_name)} · ${esc(item.age_group_name)} · ${item.score} / 100 · Level ${item.level} ${esc(item.level_name)} · ${esc(item.issued_on)} · <span class="code">${esc(item.code)}</span>${status}</span></div><div class="cert-actions"></div>`;
+    const actions = card.querySelector(".cert-actions");
+    const open = document.createElement("a");
+    open.className = "button";
+    open.href = item.url;
+    open.target = "_blank";
+    open.rel = "noopener";
+    open.textContent = "Open";
+    actions.appendChild(open);
+    const share = document.createElement("button");
+    share.type = "button";
+    share.textContent = "Share";
+    share.addEventListener("click", () => shareCertificate(item));
+    actions.appendChild(share);
+    if (!item.revoked) {
+      const revoke = document.createElement("button");
+      revoke.type = "button";
+      revoke.className = "ghost";
+      revoke.textContent = "Revoke";
+      revoke.addEventListener("click", () => revokeCertificate(item));
+      actions.appendChild(revoke);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost danger";
+    remove.textContent = "Delete";
+    remove.addEventListener("click", () => deleteCertificate(item));
+    actions.appendChild(remove);
+    root.appendChild(card);
+  }
+}
+
+async function revokeCertificate(item) {
+  const reason = window.prompt(`Revoke ${item.code} for ${item.player}? Its verify page will say it was withdrawn. Give a reason; it shows on that page.`, "");
+  if (reason === null) return;
+  try {
+    await postJSON(`/api/certificates/${encodeURIComponent(item.id)}/revoke`, { reason });
+    setStatus(`${item.code} revoked`);
+    refreshCertificates();
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function deleteCertificate(item) {
+  if (!window.confirm(`Delete ${item.code} for ${item.player}? Its link and QR code stop working for good.`)) return;
+  try {
+    await api(`/api/certificates/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+    setStatus(`${item.code} deleted`);
+    refreshCertificates();
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+function renderAcademy(academy) {
+  const form = $("academy-form");
+  for (const field of ["name", "city", "coach", "role"]) {
+    // A late reply must not wipe out what the coach is typing.
+    if (!form.elements[field].dataset.edited) form.elements[field].value = academy[field] || "";
+  }
+  const preview = $("logo-preview");
+  preview.hidden = !academy.logo;
+  if (academy.logo) preview.src = `/api/academy/logo?v=${Date.now()}`;
+  $("remove-logo").hidden = !academy.logo;
+  if (!academy.name || !academy.coach) $("academy-box").open = true;
+}
+
+$("academy-form").addEventListener("input", (event) => {
+  if (event.target.name && event.target.type !== "file") event.target.dataset.edited = "1";
+});
+
+$("academy-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.target;
+  try {
+    let academy = await api("/api/academy", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: form.elements.name.value,
+        city: form.elements.city.value,
+        coach: form.elements.coach.value,
+        role: form.elements.role.value,
+      }),
+    });
+    const file = $("academy-logo").files[0];
+    if (file) {
+      const upload = new FormData();
+      upload.append("logo", file);
+      academy = await api("/api/academy/logo", { method: "POST", body: upload });
+      $("academy-logo").value = "";
+    }
+    for (const field of ["name", "city", "coach", "role"]) delete form.elements[field].dataset.edited;
+    renderAcademy(academy);
+    setStatus("Academy saved");
+  } catch (error) {
+    setStatus(error.message);
+  }
+});
+
+$("remove-logo").addEventListener("click", async () => {
+  try {
+    renderAcademy(await api("/api/academy/logo", { method: "DELETE" }));
+    setStatus("Logo removed");
   } catch (error) {
     setStatus(error.message);
   }

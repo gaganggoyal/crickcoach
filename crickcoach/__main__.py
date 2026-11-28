@@ -4,7 +4,7 @@ import uvicorn
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run VANSH, the net coach at vansh.best.")
+    parser = argparse.ArgumentParser(description="Run VANSH, the robo coach for cricket nets (vansh.best).")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(

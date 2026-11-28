@@ -1,5 +1,5 @@
-"""VANSH, the net coach served at https://vansh.best."""
+"""VANSH, the robo coach for cricket nets, served at https://vansh.best."""
 
 NAME = "VANSH"
 ORIGIN = "https://vansh.best"
-__version__ = "0.4.0"
+__version__ = "0.5.0"

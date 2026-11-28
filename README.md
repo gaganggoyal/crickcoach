@@ -1,10 +1,11 @@
-# VANSH
+# VANSH, the robo coach
 
-VANSH is a net coach that watches a cricket net through CCTV, at [vansh.best](https://vansh.best).
+VANSH is a robo coach for cricket nets. It watches a net through CCTV. The homepage at [vansh.best](https://vansh.best) shows how it works, and the coach screen is at [vansh.best/coach](https://vansh.best/coach).
 
 - **Every ball, measured.** Upload or record the cameras and VANSH finds each ball's flight, then measures pace, length and line. It also says whether the ball would have hit the stumps.
 - **The action, read.** A pose model in the browser reads the bowling action or the batting stance and gives three coaching cues.
 - **The next drill, bowled.** The coach marks how the batter played each ball. VANSH finds the zone where the batter was beaten most often and queues that drill for a bowling machine.
+- **A certificate anyone can check.** A bowler bowls a short spell for the cameras. VANSH scores length, line, pace and consistency from its own measurements and issues a certificate with an ID and a QR code that opens its record at [vansh.best/verify](https://vansh.best/verify).
 
 Every number is a measurement with an error, and each ball says how sure it is. A ball marked "check this mark" should be confirmed by the coach.
 
@@ -29,7 +30,7 @@ The server never reaches into the club's network. The edge bridge, `python -m cr
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m crickcoach            # http://127.0.0.1:8000
+python -m crickcoach            # http://127.0.0.1:8000, coach screen at /coach
 ```
 
 With no `VANSH_COACH_KEY` set, everything is open. That suits a laptop on the net's own network. Set the key before VANSH faces the internet.
@@ -43,6 +44,8 @@ With no `VANSH_COACH_KEY` set, everything is open. That suits a laptop on the ne
 | `VANSH_ALLOW_RTSP` | Let the server record RTSP cameras itself. It is on by default without a coach key and off with one. |
 | `VANSH_RTSP_PRIVATE` | Allow private camera addresses. It is on by default without a coach key and off with one. |
 | `VANSH_MAX_GB` | Most video kept for sessions, in GB. The default is 20. When a new upload needs room, the oldest videos are removed first; their measurements, outcomes and cues stay. |
+| `VANSH_ORIGIN` | The address printed on certificates and in their QR codes. The default is `https://vansh.best`. |
+| `VANSH_TIMEZONE` | The time zone for the dates on certificates. The default is `Asia/Kolkata`. |
 
 ## Cameras
 
@@ -99,8 +102,8 @@ The test reels in `footage/` are rendered by `crickcoach/netsim.py`, and each co
 | Side, white, 25 fps, 1/250 s | 11 of 12 | 0.11 m | 5.5 km/h | — |
 | Side, red, 50 fps, 1/500 s | 11 of 12 | 0.17 m | 2.9 km/h | — |
 | Side, red, 25 fps, 1/60 s | 0 of 12 | — | — | — |
-| Behind (8 m back, 6 m up), white, 50 fps, 1/500 s | 11 of 12 | 0.12 m | — | 2.9 cm |
-| Behind (8 m back, 6 m up), red, 25 fps, 1/250 s | 5 of 12 | 1.53 m | — | 11.7 cm |
+| Behind (8 m back, 6 m up), white, 50 fps, 1/500 s | 11 of 12 | 0.12 m | — | 2.2 cm |
+| Behind (8 m back, 6 m up), red, 25 fps, 1/250 s | 5 of 12 | 1.53 m | — | 9.2 cm |
 
 The tracker VANSH started with, kept in `bench/grok_v1`, named the right length on 0 to 2 of 12 balls in every row. It locked onto the batter's pads, and it could not see a red ball at all.
 
@@ -111,6 +114,8 @@ A few known limits:
 - **Pace from the side camera alone** reads 2 to 3% low or high when the ball travels 0.3 m off the stump line. With both cameras, VANSH corrects this from the release line.
 - **The behind camera measures no pace.** Seen from behind, a faster ball that drops faster looks the same.
 - **A red ball from behind.** From 6 m up at 25 frames a second, a red ball is hard to see against the pitch. Use a white or pink ball and 50 frames a second for the line.
+- **One calibration, every ball.** The benchmark gives each clip its own click error, so errors scatter around zero. At a real net one calibration serves every ball, so a click error moves every ball the same way. In a 12-ball spell rendered on both cameras, with clicks 1.5 px out, the side camera read every ball about 0.36 m short and about 7 km/h fast. With exact clicks the same balls read within 0.15 m. The cone and radar checks in the setup guide (section 8) catch this; calibrate again if they disagree.
+- **The line comes from the ground, not from a fitted camera.** The camera behind the bowler used to let a three-dimensional fit move the bounce. That fit rests on a camera worked out from the four clicks, and with clicks 1.5 px out it put half the balls of the same spell about 15 cm towards off. The bounce is now placed through the ground homography only, and the fit just times it: the spell's line error fell from 8.7 cm to 2.1 cm (median), and the benchmark's from 2.9 cm to 2.2 cm.
 - **Real footage.** Nothing here has yet been checked against real net footage with a radar gun. That is the next test.
 
 ```bash
@@ -169,6 +174,28 @@ The pose model, MediaPipe Pose Landmarker, runs in the browser. **Read the actio
 
 Angles are measured in the picture, not in three dimensions, so they are checks for a coach to confirm. They are not a legality test for the bowling arm.
 
+## Skill certificates
+
+![A sample certificate, marked SAMPLE: the academy, the player, the score and level, four measured numbers, the coach, the date, and the ID with its QR code.](docs/img/certificate-sample.jpg)
+
+A bowler bowls a short spell, twelve balls is plenty, with the cameras running. Under **Certificates**, the coach picks the recording, types the player's name as it should be printed, and chooses pace or spin and an age group. **Score the spell** shows the score analysis: four parts with their scores, a pitch map, strengths, what to work on, and how many balls the cameras placed. **Issue the certificate** makes an A4 PDF and a picture to share.
+
+| Part | What scores | Weight, pace / spin |
+|---|---|---|
+| Length | 2 points a ball on a good length (pace 6–8 m from the batter's stumps, spin 3.5–6 m), 1 point near it | 35% / 40% |
+| Line | 2 points in the off-stump channel (pace: 30 cm outside off to middle; spin: 40 cm outside off to leg), 1 near it | 30% / 35% |
+| Pace | The faster half's average, on a scale for the age group, from under 12 to open | 20% / not scored |
+| Consistency | The spread of lengths and lines: ±0.5 m and ±6 cm score 100, ±2.5 m and ±35 cm score 0 | 15% / 25% |
+
+The score out of 100 gives a level: Starter, Developing (40), Club (55), Advanced (70) or Elite (85). Rules that keep a certificate honest:
+
+- **Measured, not typed.** Only the cameras' own readings count. A pitch mark or a pace the coach typed in is left out, and the page cannot send its own score: the server works it out again when it issues.
+- **Most of the spell.** VANSH certifies a spell only when the cameras placed at least 6 balls and at least two balls in three. A part the cameras could not measure, such as line without the camera behind the bowler, is left out and says so.
+- **Checked against the record.** Each certificate has an ID like `VN-4F7K-9QXM` and a QR code. Both open its record at `/verify`, which shows the name, the score, the score analysis and whether the coach has revoked it. Editing a copy changes nothing that page shows.
+- **The coach stays in charge.** A certificate keeps the score, academy and logo it was issued with. Revoking marks it withdrawn on its page and on new downloads. Deleting removes the record and the name.
+
+The verify pages are open to anyone, ask search engines not to index them, and show nothing from the sessions or the video. The rules above are also explained on the verify page itself, from the same code that scores.
+
 ## Deploy to a server
 
 `deploy/vps.sh` puts VANSH on a Linux server where Caddy, running in Docker, serves the sites.
@@ -197,7 +224,7 @@ ssh root@your-server cat /etc/vansh/vansh.env
 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
 ```
 
-The 83 tests take about a minute. They cover the physics, the measurement, the raw reels end to end, the API with and without a coach key, recording at the nets through the bridge, the machine in all three modes, and the bridge's safeguards. They pass on Python 3.12, the VPS's version, and on 3.15.
+The 114 tests take about a minute. They cover the physics, the measurement, the raw reels end to end, the API with and without a coach key, recording at the nets through the bridge, the machine in all three modes, the bridge's safeguards, and the assessments: the scoring rules, the certificate's QR code and PDF, and issuing, checking, revoking and deleting through the API, and the homepage: its drawing, its example spell and its links. They pass on Python 3.12, the VPS's version, and on 3.15.
 
 To render new reels:
 

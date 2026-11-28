@@ -3,23 +3,25 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VANSH — net coach</title>
-  <meta name="description" content="VANSH watches a cricket net through CCTV: pace, line and length for every ball, coaching cues for the action, and the next drill for the bowling machine.">
+  <title>Coach screen · VANSH, the robo coach</title>
+  <meta name="description" content="The coach screen of VANSH, the robo coach for cricket nets: pace, line and length for every ball, coaching cues for the action, and the next drill for the bowling machine.">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
   <header>
-    <div class="brand">
+    <a class="brand" href="/" title="VANSH home: how it works">
       <span class="ball" aria-hidden="true"></span>
       <div>
         <p class="name">VANSH</p>
-        <p class="tag"><a href="https://vansh.best">vansh.best</a> · net coach</p>
+        <p class="tag">The robo coach</p>
       </div>
-    </div>
+    </a>
     <nav>
       <button type="button" data-view="lane" class="on">Lane</button>
       <button type="button" data-view="sessions">Sessions</button>
       <button type="button" data-view="machine">Machine</button>
+      <button type="button" data-view="certificates">Certificates</button>
       <a class="navlink" href="/setup/">Setup</a>
     </nav>
     <p id="status" role="status" aria-live="polite">Ready</p>
@@ -196,8 +198,64 @@
     </div>
   </section>
 
+  <section id="view-certificates" class="view" hidden>
+    <div class="panel cert-tools">
+      <form id="assess-form">
+        <h2>Assess a bowler</h2>
+        <p class="hint">Record a short spell with both cameras, twelve balls is plenty, and track every ball. VANSH scores length, line, pace and consistency from the cameras' own readings, then issues a certificate anyone can check at <a href="/verify" target="_blank" rel="noopener">vansh.best/verify</a>.</p>
+        <label>Recording <select name="source" id="assess-source" required></select></label>
+        <label>Player's name, as printed <input name="player" id="assess-player" maxlength="60" autocomplete="off" placeholder="Full name"></label>
+        <div class="row">
+          <label>Discipline
+            <select name="discipline">
+              <option value="pace">Pace bowling</option>
+              <option value="spin">Spin bowling</option>
+            </select>
+          </label>
+          <label>Age group
+            <select name="age_group">
+              <option value="u12">Under 12</option>
+              <option value="u14">Under 14</option>
+              <option value="u16">Under 16</option>
+              <option value="u19">Under 19</option>
+              <option value="open" selected>Open</option>
+            </select>
+          </label>
+        </div>
+        <button type="submit" class="primary">Score the spell</button>
+      </form>
+      <div id="assess-result" class="assess-result" aria-live="polite" hidden></div>
+      <details id="academy-box" class="academy">
+        <summary>Academy on the certificates</summary>
+        <form id="academy-form">
+          <label>Academy or club <input name="name" maxlength="70" placeholder="Name of the academy or club"></label>
+          <label>City <input name="city" maxlength="40" placeholder="City"></label>
+          <div class="row">
+            <label>Coach's name <input name="coach" maxlength="60" placeholder="Full name"></label>
+            <label>Coach's title <input name="role" maxlength="40" placeholder="Head coach"></label>
+          </div>
+          <label>Logo <input name="logo" id="academy-logo" type="file" accept="image/png,image/jpeg,image/webp"></label>
+          <img id="logo-preview" class="logo-preview" alt="The academy's logo" hidden>
+          <div class="buttons">
+            <button type="submit">Save</button>
+            <button type="button" id="remove-logo" class="ghost" hidden>Remove the logo</button>
+          </div>
+          <p class="hint">New certificates carry these. Certificates already issued keep what they were issued with.</p>
+        </form>
+      </details>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Certificates issued</h2>
+        <a class="navlink" href="/verify" target="_blank" rel="noopener">Verify page</a>
+      </div>
+      <div id="cert-list" class="session-list"></div>
+      <p class="hint">Each certificate's QR code opens its record on vansh.best/verify, so a copy cannot be edited into a better score. Revoking shows "revoked" on that page; deleting removes the record and the name for good. Get a parent's consent before certifying a player under 18, because the name shows on the verify page.</p>
+    </div>
+  </section>
+
   <footer>
-    <p>VANSH tracks the ball from CCTV and reads the action from a pose model in this browser. Every number is a measurement with an error, so each ball shows how sure it is.</p>
+    <p>VANSH tracks the ball from CCTV and reads the action from a pose model in this browser. Every number is a measurement with an error, so each ball shows how sure it is. <a href="/verify">Verify a certificate</a>.</p>
   </footer>
 
   <script type="module" src="/assets/app.js"></script>

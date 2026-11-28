@@ -27,8 +27,9 @@ TEMPLATE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} · VANSH</title>
-  <meta name="description" content="Where to put CCTV cameras at a cricket net, how to set them, and how to connect them to VANSH.">
+  <title>{title}</title>
+  <meta name="description" content="Where to put CCTV cameras at a cricket net, how to set them, and how to connect them to VANSH, the robo coach.">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/app.css">
   <link rel="stylesheet" href="/assets/guide.css">
 </head>
@@ -38,12 +39,13 @@ TEMPLATE = """<!DOCTYPE html>
       <span class="ball" aria-hidden="true"></span>
       <div>
         <p class="name">VANSH</p>
-        <p class="tag">vansh.best · net coach</p>
+        <p class="tag">The robo coach</p>
       </div>
     </a>
     <nav>
-      <a class="navlink" href="/">Coach screen</a>
+      <a class="navlink" href="/coach">Coach screen</a>
       <a class="navlink on" href="/setup/" aria-current="page">Setup</a>
+      <a class="navlink" href="/verify">Verify</a>
       <a class="navlink" href="{repo}">GitHub</a>
     </nav>
   </header>
@@ -75,7 +77,10 @@ def render() -> str:
         )
         body = converter.convert(text)
         heading = re.search(r"^# (.+)$", text, re.MULTILINE)
-        title = heading.group(1).strip() if heading else "Set up VANSH at your nets"
+        title = heading.group(1).strip() if heading else "Set up VANSH, the robo coach, at your nets"
+        title = re.sub(r"[*_]", "", title)  # the heading's emphasis is for the page, not the tab
+        if "VANSH" not in title:
+            title += " · VANSH"
         # Links to other files in the repo point at GitHub; the website only serves the guide.
         body = re.sub(r'href="(?!https?:|#|/|mailto:)([^"]+)"',
                       lambda match: f'href="{REPO}/blob/main/docs/{match.group(1)}"', body)

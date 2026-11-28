@@ -6,3 +6,5 @@ imageio-ffmpeg>=0.5.1
 numpy>=1.26
 opencv-python-headless>=4.9
 markdown>=3.5
+pillow>=10.0
+segno>=1.6

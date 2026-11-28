@@ -8,3 +8,6 @@ data/machine/
 data/secret.key
 data/sessions/
 deploy/vps.local.env
+data/certificates/
+data/academy.json
+data/academy-logo.png
