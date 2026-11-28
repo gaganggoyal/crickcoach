@@ -15,11 +15,13 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field
 
-from crickcoach import NAME, ORIGIN, __version__
+from crickcoach import NAME, ORIGIN, __version__, site
 from crickcoach import certificate as cert
 from crickcoach.assess import AGE_GROUPS, DISCIPLINES, assess
 from crickcoach.auth import COOKIE, DAYS, Auth
@@ -232,6 +234,10 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             )
         if path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")
+        elif path.startswith("/fonts/") or (path.startswith(("/assets/", "/setup/img/")) and request.query_params.get("v")):
+            response.headers.setdefault("Cache-Control", site.IMMUTABLE)
+        elif path.startswith(("/assets/", "/setup/img/")):
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
     # -- who is here ------------------------------------------------------
@@ -973,55 +979,90 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     # -- the pages ----------------------------------------------------------------
 
-    @app.get("/")
+    @app.exception_handler(StarletteHTTPException)
+    async def not_found(request: Request, exc: StarletteHTTPException) -> Response:
+        """A page for addresses that lead nowhere; the API and files keep their short answers."""
+        path = request.url.path
+        files = ("/api/", "/assets/", "/fonts/", "/setup/img/")
+        if exc.status_code == 404 and request.method in ("GET", "HEAD") and not path.startswith(files) and "/certificate." not in path:
+            return HTMLResponse(site.not_found_page(origin), status_code=404)
+        return await http_exception_handler(request, exc)
+    # Pages answer HEAD as well as GET, for link checkers and crawlers that ask first.
+
+    @app.api_route("/", methods=["GET", "HEAD"])
     def home() -> HTMLResponse:
         return HTMLResponse(render_home(origin))
 
-    @app.get("/coach")
-    def coach_screen() -> FileResponse:
-        return FileResponse(WEB / "index.html")
+    @app.api_route("/coach", methods=["GET", "HEAD"])
+    def coach_screen() -> HTMLResponse:
+        return HTMLResponse(site.coach_page(origin))
 
     @app.get("/coach/")
     def coach_redirect() -> RedirectResponse:
-        return RedirectResponse("/coach", status_code=307)
+        return RedirectResponse("/coach", status_code=308)
 
-    @app.get("/favicon.ico")
-    def favicon() -> Response:
-        return Response(status_code=204)
+    @app.api_route("/favicon.ico", methods=["GET", "HEAD"])
+    def favicon() -> FileResponse:
+        return FileResponse(WEB / "icons" / "favicon.ico", media_type="image/x-icon",
+                            headers={"Cache-Control": "public, max-age=604800"})
+
+    # -- for search engines and phones -----------------------------------------------
+
+    @app.api_route("/robots.txt", methods=["GET", "HEAD"])
+    def robots() -> Response:
+        return Response(site.robots_txt(origin), media_type="text/plain", headers={"Cache-Control": "public, max-age=3600"})
+
+    @app.api_route("/sitemap.xml", methods=["GET", "HEAD"])
+    def sitemap() -> Response:
+        return Response(site.sitemap_xml(origin), media_type="application/xml",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+    @app.api_route("/manifest.webmanifest", methods=["GET", "HEAD"])
+    def manifest() -> JSONResponse:
+        return JSONResponse(site.manifest(), media_type="application/manifest+json",
+                            headers={"Cache-Control": "public, max-age=86400"})
 
     # -- the setup guide, open to anyone ---------------------------------------------
 
     @app.get("/setup")
     def setup_redirect() -> RedirectResponse:
-        return RedirectResponse("/setup/", status_code=307)
+        return RedirectResponse("/setup/", status_code=308)
 
-    @app.get("/setup/")
+    @app.api_route("/setup/", methods=["GET", "HEAD"])
     def setup_page() -> HTMLResponse:
-        return HTMLResponse(render_guide())
+        return HTMLResponse(render_guide(origin))
+
+    @app.get("/setup/img/{stem}-{width:int}w.webp")
+    def guide_picture(stem: str, width: int) -> FileResponse:
+        """A smaller WebP copy of a guide picture, for phones. Made on first request and kept."""
+        path = site.variant(stem, width, store.root / "cache" / "img")
+        if path is None:
+            raise HTTPException(404, "No such picture.")
+        return FileResponse(path, media_type="image/webp")
 
     # -- verifying a certificate, open to anyone -------------------------------------
 
-    @app.get("/verify")
+    @app.api_route("/verify", methods=["GET", "HEAD"])
     def verify_lookup(id: str = "") -> Response:
         if id.strip():
             code = cert.parse(id)
             if code is None:
-                return HTMLResponse(lookup_page(id[:24], "bad"), status_code=400, headers=NOINDEX)
+                return HTMLResponse(lookup_page(id[:24], "bad", origin=origin), status_code=400, headers=NOINDEX)
             return RedirectResponse(f"/verify/{cert.show(code)}", status_code=303)
-        return HTMLResponse(lookup_page())
+        return HTMLResponse(lookup_page(origin=origin))
 
-    @app.get("/verify/{code}")
+    @app.api_route("/verify/{code}", methods=["GET", "HEAD"])
     def verify_certificate(code: str) -> Response:
         parsed = cert.parse(code)
         if parsed is None:
-            return HTMLResponse(lookup_page(code[:24], "bad"), status_code=404, headers=NOINDEX)
+            return HTMLResponse(lookup_page(code[:24], "bad", origin=origin), status_code=404, headers=NOINDEX)
         if code != cert.show(parsed):
             return RedirectResponse(f"/verify/{cert.show(parsed)}", status_code=308)
         try:
             record = store.certificate(parsed)
         except KeyError:
-            return HTMLResponse(lookup_page(cert.show(parsed), "missing"), status_code=404, headers=NOINDEX)
-        return HTMLResponse(certificate_page(record, zone=zone), headers=NOINDEX)
+            return HTMLResponse(lookup_page(cert.show(parsed), "missing", origin=origin), status_code=404, headers=NOINDEX)
+        return HTMLResponse(certificate_page(record, zone=zone, origin=origin), headers=NOINDEX)
 
     def certificate_file(code: str, kind: str, download: bool) -> FileResponse:
         parsed = cert.parse(code)

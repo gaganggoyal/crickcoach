@@ -261,7 +261,7 @@ class RecordingAtTheNetsTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("Where the cameras go", page.text)
         self.assertIn("script-src 'self'", page.headers["content-security-policy"])
-        self.assertEqual(self.client.get("/setup", follow_redirects=False).status_code, 307)
+        self.assertEqual(self.client.get("/setup", follow_redirects=False).status_code, 308)
         self.assertEqual(self.client.get("/setup/img/top-view.svg").status_code, 200)
 
 

@@ -244,8 +244,10 @@ async function makeLandmarker(model) {
   }
 }
 
+// The pose model is about 8 MB, so it loads only when the live camera starts.
 async function loadPose() {
   try {
+    setStatus("Loading the pose model…");
     state.landmarker = await makeLandmarker("lite");
     setStatus("Pose model ready");
   } catch {
@@ -1929,4 +1931,3 @@ $("remove-logo").addEventListener("click", async () => {
 
 loadMe();
 loadSample("bowling-clean");
-loadPose();

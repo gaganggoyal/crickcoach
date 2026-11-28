@@ -3,12 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Coach screen · VANSH, the robo coach</title>
-  <meta name="description" content="The coach screen of VANSH, the robo coach for cricket nets: pace, line and length for every ball, coaching cues for the action, and the next drill for the bowling machine.">
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/app.css">
+  <!--head-->
 </head>
-<body>
+<body class="app-page">
   <header>
     <a class="brand" href="/" title="VANSH home: how it works">
       <span class="ball" aria-hidden="true"></span>
@@ -41,6 +38,8 @@
     </form>
   </dialog>
 
+  <main id="main">
+  <h1 class="visually-hidden">VANSH coach screen</h1>
   <section id="view-lane" class="view">
     <div class="stage-wrap">
       <video id="live-video" playsinline muted></video>
@@ -253,6 +252,7 @@
       <p class="hint">Each certificate's QR code opens its record on vansh.best/verify, so a copy cannot be edited into a better score. Revoking shows "revoked" on that page; deleting removes the record and the name for good. Get a parent's consent before certifying a player under 18, because the name shows on the verify page.</p>
     </div>
   </section>
+  </main>
 
   <footer>
     <p>VANSH tracks the ball from CCTV and reads the action from a pose model in this browser. Every number is a measurement with an error, so each ball shows how sure it is. <a href="/verify">Verify a certificate</a>.</p>

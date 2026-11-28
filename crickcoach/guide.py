@@ -15,11 +15,17 @@ from pathlib import Path
 
 import markdown
 
+from crickcoach import ORIGIN, site
+
 DOCS = Path(__file__).resolve().parent.parent / "docs"
 GUIDE = DOCS / "SETUP.md"
 REPO = "https://github.com/gaganggoyal/crickcoach"
 
-_cache: dict = {"mtime": None, "page": ""}
+DESCRIPTION = ("Where to put CCTV cameras at a cricket net, the camera settings, the wiring, the bridge "
+               "computer, calibration and checking the numbers, for VANSH's ball tracking.")
+PICTURE_SIZES = "(max-width: 860px) calc(100vw - 44px), 760px"
+
+_cache: dict = {"key": None, "page": ""}
 _lock = threading.Lock()
 
 TEMPLATE = """<!DOCTYPE html>
@@ -27,11 +33,7 @@ TEMPLATE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  <meta name="description" content="Where to put CCTV cameras at a cricket net, how to set them, and how to connect them to VANSH, the robo coach.">
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/assets/app.css">
-  <link rel="stylesheet" href="/assets/guide.css">
+{head}
 </head>
 <body class="guide-page">
   <header>
@@ -58,17 +60,16 @@ TEMPLATE = """<!DOCTYPE html>
 {body}
     </article>
   </div>
-  <script type="module" src="/assets/guide.js"></script>
 </body>
 </html>
 """
 
 
-def render() -> str:
+def render(origin: str = ORIGIN) -> str:
     """The guide as a full page, rebuilt only when docs/SETUP.md changes."""
     with _lock:
         mtime = GUIDE.stat().st_mtime
-        if _cache["mtime"] == mtime:
+        if _cache["key"] == (mtime, origin):
             return _cache["page"]
         text = GUIDE.read_text(encoding="utf-8")
         converter = markdown.Markdown(
@@ -84,6 +85,22 @@ def render() -> str:
         # Links to other files in the repo point at GitHub; the website only serves the guide.
         body = re.sub(r'href="(?!https?:|#|/|mailto:)([^"]+)"',
                       lambda match: f'href="{REPO}/blob/main/docs/{match.group(1)}"', body)
-        page = TEMPLATE.format(title=html.escape(title), repo=REPO, toc=converter.toc, body=body)
-        _cache.update(mtime=mtime, page=page)
+        body = re.sub(r'<img alt="([^"]*)" src="img/([\w.-]+)"(?: title="[^"]*")? />',
+                      lambda match: site.picture(match.group(2), html.unescape(match.group(1)), sizes=PICTURE_SIZES), body)
+        # On a phone the contents fold into one line under the heading.
+        body = body.replace("</h1>", f'</h1>\n<details class="toc-mobile"><summary>On this page</summary>{converter.toc}</details>', 1)
+        page_url = origin.rstrip("/") + "/setup/"
+        article = {
+            "@context": "https://schema.org", "@type": "TechArticle", "headline": title, "description": DESCRIPTION,
+            "url": page_url, "mainEntityOfPage": page_url, "inLanguage": "en",
+            "image": [origin.rstrip("/") + "/" + site.SHARE_IMAGE[0]],
+            "dateModified": site.modified("../docs/SETUP.md").isoformat(timespec="seconds"),
+            "author": {"@type": "Organization", "name": site.NAME, "url": origin.rstrip("/") + "/"},
+            "publisher": {"@type": "Organization", "name": site.NAME, "url": origin.rstrip("/") + "/"},
+        }
+        head = site.head(title=title, description=DESCRIPTION, origin=origin, path="/setup/", kind="article",
+                         styles=("app.css", "guide.css"), scripts=("guide.js",), serif=True,
+                         extra=site.json_ld(article, site.breadcrumbs(origin, ("Setup guide", "/setup/"))))
+        page = TEMPLATE.format(head=head, repo=REPO, toc=converter.toc, body=body)
+        _cache.update(key=(mtime, origin), page=page)
         return page

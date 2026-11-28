@@ -41,10 +41,12 @@ class HomepageTests(unittest.TestCase):
 
     def test_every_file_the_homepage_asks_for_is_served(self):
         page = self.client.get("/").text
-        wanted = set(re.findall(r'(?:href|src)="(/(?:assets|fonts|setup/img)/[^"#?]+)"', page))
+        wanted = set(re.findall(r'(?:href|src)="(/(?:assets|fonts|setup/img)/[^"#\s]+)"', page))
+        for srcset in re.findall(r'srcset="([^"]+)"', page):
+            wanted |= {candidate.split()[0] for candidate in srcset.split(", ")}
         wanted |= set(re.findall(r'url\("(/fonts/[^"]+)"\)', self.client.get("/assets/app.css").text))
         wanted.add("/assets/og.jpg")
-        self.assertGreaterEqual(len(wanted), 7)
+        self.assertGreaterEqual(len(wanted), 10)
         for address in sorted(wanted):
             self.assertEqual(self.client.get(address).status_code, 200, address)
 
@@ -55,7 +57,7 @@ class HomepageTests(unittest.TestCase):
         self.assertIn('<p class="tag">The robo coach</p>', screen.text)
         self.assertIn("content-security-policy", screen.headers)
         moved = self.client.get("/coach/", follow_redirects=False)
-        self.assertEqual(moved.status_code, 307)
+        self.assertEqual(moved.status_code, 308)
         self.assertEqual(moved.headers["location"], "/coach")
 
     def test_the_guide_and_the_verify_page_carry_the_name_and_reach_the_coach_screen(self):

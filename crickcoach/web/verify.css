@@ -80,3 +80,7 @@ a.button:hover { border-color: var(--cream); }
   .lookup-row { flex-direction: column; }
   .verify h1 { font-size: 32px; }
 }
+
+/* The page for addresses that lead nowhere. */
+.lost { margin: 6px 0 0; padding-left: 20px; line-height: 1.9; font-size: 17px; }
+.lost a { color: var(--cream); font-weight: 600; }

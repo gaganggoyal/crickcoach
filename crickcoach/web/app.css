@@ -1,12 +1,12 @@
 @font-face {
   font-family: "DM Serif Display";
-  src: url("/fonts/DMSerifDisplay-Regular.ttf") format("truetype");
+  src: url("/fonts/DMSerifDisplay-Regular.woff2") format("woff2"), url("/fonts/DMSerifDisplay-Regular.ttf") format("truetype");
   font-display: swap;
 }
 @font-face {
   font-family: "DM Serif Display";
   font-style: italic;
-  src: url("/fonts/DMSerifDisplay-Italic.ttf") format("truetype");
+  src: url("/fonts/DMSerifDisplay-Italic.woff2") format("woff2"), url("/fonts/DMSerifDisplay-Italic.ttf") format("truetype");
   font-display: swap;
 }
 
@@ -29,6 +29,17 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
+.visually-hidden {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 body {
   margin: 0;
@@ -353,3 +364,45 @@ a.button:hover { border-color: var(--cream); }
 }
 
 footer a { color: var(--cream); }
+
+/* Phones and tablets */
+@media (max-width: 760px) {
+  /* 16 px stops iPhones zooming into a field when it is tapped. */
+  input, select, textarea { font-size: 16px; }
+  /* The coach screen's sections sit in one row that scrolls sideways, under the name. */
+  .app-page header { gap: 8px 12px; padding: 10px 14px; }
+  .app-page header nav {
+    order: 3;
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin: 0 -14px;
+    padding: 2px 14px 4px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .app-page header nav::-webkit-scrollbar { display: none; }
+  .app-page header nav > * { flex: 0 0 auto; }
+  .app-page #status { order: 4; flex: 1 0 100%; margin: 0; font-size: 13px; max-width: none; }
+  .app-page .account { order: 2; margin-left: auto; }
+  /* The guide's and the verify page's links too: one row, swiped sideways if it is wider than the phone. */
+  .guide-page header, .verify-page header { gap: 10px 14px; padding: 10px 14px; flex-wrap: wrap; }
+  .guide-page header nav, .verify-page header nav {
+    flex: 1 0 100%;
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    overflow-x: auto;
+    margin: 0;
+    padding-bottom: 2px;
+    scrollbar-width: none;
+  }
+  .guide-page header nav::-webkit-scrollbar, .verify-page header nav::-webkit-scrollbar { display: none; }
+  .guide-page header nav > *, .verify-page header nav > * { flex: 0 0 auto; }
+  .view { padding: 12px; gap: 12px; }
+  footer { padding: 0 14px 18px; }
+}
+
+/* Fingers need bigger targets than mouse pointers. */
+@media (pointer: coarse) {
+  nav button, .navlink { min-height: 44px; display: inline-flex; align-items: center; }
+}
