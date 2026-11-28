@@ -458,16 +458,12 @@ def _behind(points: list[dict], calibration: dict, width: int, height: int) -> d
                        "x_m": round(float(position[0]), 3)}
     elif kink["one_sided"]:
         notes.append("The ball was lost before it pitched, so check the mark.")
+    # The fit only times the bounce. Where the ball pitched comes from the picture
+    # through the ground homography: the fitted camera turns a 1.5 px click
+    # error into 15 cm of line, the homography into 2 cm.
     u_b, v_b = _kink_pixel(kink["t"], _pick(kink, t, pixels[:, 0]), _pick(kink, t, pixels[:, 1]), tb,
                            fallback=(kink["coeffs"]["b"][0], kink["coeffs"]["a"][0]))
     bounce = apply_h(ground, u_b, v_b)
-    if solved is not None and solved["rms_px"] <= 1.6:
-        # A tight three-dimensional fit places the bounce better than the picture
-        # alone, as long as the two agree; when they part, the calibration is
-        # off and the picture is the safer read.
-        gap = math.hypot(solved["bounce"][0] - bounce[0], solved["bounce"][1] - bounce[1])
-        if gap <= 0.6:
-            bounce = solved["bounce"]
     length_m = STUMP_TO_STUMP_M - bounce[1]
     if not -0.5 <= length_m <= STUMP_TO_STUMP_M - 0.7:
         # A "bounce" behind the batter's stumps or behind the bowling crease is not

@@ -118,6 +118,20 @@ class BehindMeasureTests(unittest.TestCase):
         self.assertEqual(measured["pitch"]["line"], "outside off")
         self.assertIsNone(measured["pace_kph"])
 
+    def test_clicks_a_little_off_move_the_line_a_little(self):
+        # A coach's clicks land a pixel or two off. Through the ground homography
+        # that is a centimetre or two of line; through a camera fitted from the
+        # clicks it was 15 cm on some balls and not others.
+        camera = netsim.behind_camera()
+        worst = 0.0
+        for seed in range(4):
+            calibration = {"kind": "behind", "corners": netsim.behind_clicks(camera, jitter_px=1.5, seed=seed)}
+            for line, length in ((-0.3, 7.2), (-0.1, 6.0), (0.05, 8.5), (-0.2, 4.5)):
+                truth = netsim.simulate(netsim.Delivery(125, line, netsim.PITCH_LENGTH - length), 1.0)
+                measured = measure(seen(camera, truth), calibration, camera.width, camera.height)
+                worst = max(worst, abs(measured["pitch"]["offset_m"] - truth.bounce_x))
+        self.assertLess(worst, 0.06)
+
 
 class CombineTests(unittest.TestCase):
     side = {
