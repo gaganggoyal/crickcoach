@@ -3,25 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VANSH</title>
+  <title>Coach screen · VANSH, the robo coach</title>
+  <meta name="description" content="The coach screen of VANSH, the robo coach for cricket nets: pace, line and length for every ball, coaching cues for the action, and the next drill for the bowling machine.">
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/assets/app.css">
 </head>
 <body>
   <header>
-    <div class="brand">
+    <a class="brand" href="/" title="VANSH home: how it works">
       <span class="ball" aria-hidden="true"></span>
       <div>
         <p class="name">VANSH</p>
-        <p class="tag"><a href="https://vansh.best">vansh.best</a></p>
+        <p class="tag">The robo coach</p>
       </div>
-    </div>
+    </a>
     <nav>
       <button type="button" data-view="lane" class="on">Lane</button>
       <button type="button" data-view="sessions">Sessions</button>
       <button type="button" data-view="machine">Machine</button>
+      <button type="button" data-view="certificates">Certificates</button>
+      <a class="navlink" href="/setup/">Setup</a>
     </nav>
-    <p id="status">Ready</p>
+    <p id="status" role="status" aria-live="polite">Ready</p>
+    <div id="account" class="account"></div>
   </header>
+
+  <dialog id="login-dialog">
+    <form id="login-form" method="dialog">
+      <h2>Coach sign in</h2>
+      <p class="hint">Sessions hold video of players, so they are for the coach only. The lane works for anyone.</p>
+      <label>Coach key <input id="login-key" type="password" autocomplete="current-password" required></label>
+      <p id="login-error" class="error"></p>
+      <div class="buttons">
+        <button type="submit" class="primary">Sign in</button>
+        <button type="button" id="login-cancel" class="ghost">Cancel</button>
+      </div>
+    </form>
+  </dialog>
 
   <section id="view-lane" class="view">
     <div class="stage-wrap">
@@ -29,7 +47,7 @@
       <canvas id="stage" width="960" height="540"></canvas>
       <p id="stage-caption" class="caption">Side-on for bowling. Front-on for batting.</p>
     </div>
-    <aside class="cues-panel">
+    <aside class="panel cues-panel">
       <div class="panel-head">
         <h2>This ball</h2>
         <div class="switch" id="role-switch">
@@ -40,10 +58,11 @@
       <div id="cues" class="cues">
         <p class="empty">Start the camera, or load a sample action.</p>
       </div>
+      <p class="hint">Cues are measured in the picture. A coach still confirms them.</p>
     </aside>
-    <form id="lane-controls" class="controls">
+    <form id="lane-controls" class="panel controls">
       <label>Player
-        <input id="player-name" name="player" value="VANSH net" autocomplete="off">
+        <input id="player-name" name="player" value="Net player" autocomplete="off">
       </label>
       <label>Person in frame
         <select id="person">
@@ -56,7 +75,7 @@
         <select id="devices"><option value="">Default camera</option></select>
       </label>
       <div class="buttons">
-        <button type="button" id="start-camera">Start camera</button>
+        <button type="button" id="start-camera" class="primary">Start camera</button>
         <button type="button" id="stop-camera" disabled>Stop</button>
         <button type="button" id="save-ball" disabled>Save this ball</button>
         <button type="button" id="sample-clean">Sample action</button>
@@ -66,72 +85,102 @@
   </section>
 
   <section id="view-sessions" class="view" hidden>
-    <div class="session-tools">
+    <div class="panel session-tools">
+      <form id="nets-form" class="nets">
+        <h2>Record at the nets</h2>
+        <div id="nets-status" class="nets-status" aria-live="polite">
+          <p class="nets-line"><span class="dot"></span><span>Looking for the bridge at the nets…</span></p>
+        </div>
+        <fieldset id="nets-fields">
+          <label>Name <input name="name" value="Net session" required maxlength="80"></label>
+          <div class="row">
+            <label>Role
+              <select name="role">
+                <option value="bowling">Bowling</option>
+                <option value="batting">Batting</option>
+              </select>
+            </label>
+            <label>Batter
+              <select name="batter">
+                <option value="right">Right-handed</option>
+                <option value="left">Left-handed</option>
+              </select>
+            </label>
+          </div>
+        </fieldset>
+        <div class="buttons">
+          <button type="submit" class="primary" id="nets-start">Start recording</button>
+          <button type="button" id="nets-stop" hidden>Stop recording</button>
+        </div>
+        <p class="hint">The bridge on a computer at the nets records both cameras and sends a take every minute and a half. <a href="/setup/#5-the-bridge-at-the-nets">Set up the cameras and the bridge</a>.</p>
+      </form>
       <form id="upload-form">
-        <h2>Upload a net video</h2>
-        <label>Name <input name="name" value="VANSH net" required></label>
-        <label>Role
-          <select name="role">
-            <option value="bowling">Bowling</option>
-            <option value="batting">Batting</option>
-          </select>
-        </label>
-        <label>Side camera <input name="side" type="file" accept="video/*" required></label>
+        <h2>Upload a net session</h2>
+        <label>Name <input name="name" value="Net session" required maxlength="80"></label>
+        <div class="row">
+          <label>Role
+            <select name="role">
+              <option value="bowling">Bowling</option>
+              <option value="batting">Batting</option>
+            </select>
+          </label>
+          <label>Batter
+            <select name="batter">
+              <option value="right">Right-handed</option>
+              <option value="left">Left-handed</option>
+            </select>
+          </label>
+        </div>
+        <label>Side-on camera <input name="side" type="file" accept="video/*"></label>
         <label>Behind the bowler <input name="behind" type="file" accept="video/*"></label>
-        <button type="submit">Cut into deliveries</button>
+        <button type="submit" class="primary">Find and track the balls</button>
+        <p class="hint">Either camera works alone. The side camera measures pace and length; the camera behind the bowler measures the line.</p>
       </form>
-      <form id="camera-form">
+      <form id="camera-form" hidden>
         <h2>Record from CCTV</h2>
-        <label>Name <input name="name" value="VANSH take"></label>
-        <label>Role
-          <select name="role">
-            <option value="bowling">Bowling</option>
-            <option value="batting">Batting</option>
-          </select>
-        </label>
-        <label>Side camera rtsp:// <input name="side_url" placeholder="rtsp://192.168.1.20/stream" required></label>
+        <label>Name <input name="name" value="Camera take" maxlength="80"></label>
+        <label>Side camera <input name="side_url" placeholder="rtsp://192.168.1.20/stream" required></label>
         <label>Behind the bowler <input name="behind_url" placeholder="optional"></label>
-        <label>Seconds <input name="seconds" type="number" min="3" max="90" value="20"></label>
-        <button type="submit">Record</button>
+        <label>Seconds <input name="seconds" type="number" min="3" max="90" value="30"></label>
+        <button type="submit">Record both together</button>
       </form>
-      <div class="buttons">
-        <button type="button" id="demo-session" class="ghost">Load raw side clip</button>
-        <button type="button" id="demo-tracked" class="ghost">Load raw tracked ball</button>
-        <button type="button" id="demo-behind" class="ghost">Load raw behind ball</button>
+      <div>
+        <h2>Raw reels</h2>
+        <p class="hint">Rendered nets with a known answer, for trying VANSH out.</p>
+        <div class="buttons">
+          <button type="button" class="ghost" data-demo="pair">Two cameras, one ball</button>
+          <button type="button" class="ghost" data-demo="session">Side session, two balls</button>
+          <button type="button" class="ghost" data-demo="tracked">Side, one ball</button>
+          <button type="button" class="ghost" data-demo="behind">Behind, one ball</button>
+        </div>
       </div>
       <p id="progress" class="note"></p>
       <div id="session-list" class="session-list"></div>
     </div>
-    <div id="review" class="review">
-      <p class="empty">Upload a side-on video, record the cameras, or load a raw reel.</p>
+    <div id="review" class="panel review">
+      <p class="empty">Upload a session, record the cameras, or load a raw reel.</p>
     </div>
   </section>
 
   <section id="view-machine" class="view" hidden>
-    <form id="machine-form" class="machine-form">
+    <form id="machine-form" class="panel machine-form">
       <h2>Queue a ball</h2>
-      <p class="hint">Bowl next sends the queue to the machine. With no machine address, the simulator records each ball. Set VANSH_MACHINE=host:8520 for a real feeder.</p>
-      <label>Pace km/h <input name="pace_kph" type="number" min="40" max="180" step="1" placeholder="125"></label>
-      <label>Line
-        <select name="line">
-          <option>wide off</option>
-          <option selected>off</option>
-          <option>middle</option>
-          <option>leg</option>
-          <option>wide leg</option>
-        </select>
-      </label>
-      <label>Length
-        <select name="length">
-          <option>yorker</option>
-          <option>full</option>
-          <option selected>good</option>
-          <option>short</option>
-          <option>bouncer</option>
-        </select>
-      </label>
-      <label>Note <input name="note" maxlength="200" placeholder="Block and leave"></label>
-      <button type="submit">Add to the queue</button>
+      <p id="machine-mode" class="hint"></p>
+      <div class="row">
+        <label>Pace km/h <input name="pace_kph" type="number" min="40" max="180" step="1" placeholder="125"></label>
+        <label>Batter
+          <select name="batter">
+            <option value="right">Right-handed</option>
+            <option value="left">Left-handed</option>
+          </select>
+        </label>
+      </div>
+      <div class="row">
+        <label>Line <select name="line" id="machine-line"></select></label>
+        <label>Length <select name="length" id="machine-length"></select></label>
+      </div>
+      <label>Note <input name="note" maxlength="200" placeholder="Leave outside off"></label>
+      <button type="submit" class="primary">Add to the queue</button>
       <div class="buttons">
         <button type="button" id="bowl-next">Bowl next</button>
         <button type="button" id="bowl-all">Bowl the queue</button>
@@ -139,13 +188,75 @@
       </div>
       <p id="radar-line" class="note"></p>
     </form>
-    <div>
+    <div class="panel">
       <h2>Waiting</h2>
       <div id="machine-list" class="machine-list"></div>
+      <h2>At the nets</h2>
+      <div id="request-list" class="machine-list"></div>
       <h2>Bowled</h2>
       <div id="bowled-list" class="machine-list"></div>
     </div>
   </section>
+
+  <section id="view-certificates" class="view" hidden>
+    <div class="panel cert-tools">
+      <form id="assess-form">
+        <h2>Assess a bowler</h2>
+        <p class="hint">Record a short spell with both cameras, twelve balls is plenty, and track every ball. VANSH scores length, line, pace and consistency from the cameras' own readings, then issues a certificate anyone can check at <a href="/verify" target="_blank" rel="noopener">vansh.best/verify</a>.</p>
+        <label>Recording <select name="source" id="assess-source" required></select></label>
+        <label>Player's name, as printed <input name="player" id="assess-player" maxlength="60" autocomplete="off" placeholder="Full name"></label>
+        <div class="row">
+          <label>Discipline
+            <select name="discipline">
+              <option value="pace">Pace bowling</option>
+              <option value="spin">Spin bowling</option>
+            </select>
+          </label>
+          <label>Age group
+            <select name="age_group">
+              <option value="u12">Under 12</option>
+              <option value="u14">Under 14</option>
+              <option value="u16">Under 16</option>
+              <option value="u19">Under 19</option>
+              <option value="open" selected>Open</option>
+            </select>
+          </label>
+        </div>
+        <button type="submit" class="primary">Score the spell</button>
+      </form>
+      <div id="assess-result" class="assess-result" aria-live="polite" hidden></div>
+      <details id="academy-box" class="academy">
+        <summary>Academy on the certificates</summary>
+        <form id="academy-form">
+          <label>Academy or club <input name="name" maxlength="70" placeholder="Name of the academy or club"></label>
+          <label>City <input name="city" maxlength="40" placeholder="City"></label>
+          <div class="row">
+            <label>Coach's name <input name="coach" maxlength="60" placeholder="Full name"></label>
+            <label>Coach's title <input name="role" maxlength="40" placeholder="Head coach"></label>
+          </div>
+          <label>Logo <input name="logo" id="academy-logo" type="file" accept="image/png,image/jpeg,image/webp"></label>
+          <img id="logo-preview" class="logo-preview" alt="The academy's logo" hidden>
+          <div class="buttons">
+            <button type="submit">Save</button>
+            <button type="button" id="remove-logo" class="ghost" hidden>Remove the logo</button>
+          </div>
+          <p class="hint">New certificates carry these. Certificates already issued keep what they were issued with.</p>
+        </form>
+      </details>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Certificates issued</h2>
+        <a class="navlink" href="/verify" target="_blank" rel="noopener">Verify page</a>
+      </div>
+      <div id="cert-list" class="session-list"></div>
+      <p class="hint">Each certificate's QR code opens its record on vansh.best/verify, so a copy cannot be edited into a better score. Revoking shows "revoked" on that page; deleting removes the record and the name for good. Get a parent's consent before certifying a player under 18, because the name shows on the verify page.</p>
+    </div>
+  </section>
+
+  <footer>
+    <p>VANSH tracks the ball from CCTV and reads the action from a pose model in this browser. Every number is a measurement with an error, so each ball shows how sure it is. <a href="/verify">Verify a certificate</a>.</p>
+  </footer>
 
   <script type="module" src="/assets/app.js"></script>
 </body>

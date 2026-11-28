@@ -1,3 +1,10 @@
+"""The raw reels: rendered nets whose truth is in footage/manifest.json.
+
+These decode real H.264 and run the whole tracker, so they take a few seconds.
+"""
+
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -5,45 +12,59 @@ from fastapi.testclient import TestClient
 
 from crickcoach import NAME, ORIGIN
 from crickcoach.app import create_app
+from crickcoach.deliveries import find_deliveries
 from crickcoach.flight import analyse_clip
 from crickcoach.footage import clip, manifest
-from crickcoach.video import cut_video
+
+REELS = ("side_two_balls", "side_good_length", "behind_off_good", "pair_side", "pair_behind")
 
 
-class FootageTests(unittest.TestCase):
-    def test_manifest_names_vansh(self):
+def wait_ready(client: TestClient, session_id: str, timeout: float = 120.0) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        session = client.get(f"/api/sessions/{session_id}").json()
+        if session["status"] in {"ready", "error"} and not session.get("job"):
+            return session
+        time.sleep(0.2)
+    raise AssertionError("the session never finished")
+
+
+class ReelTests(unittest.TestCase):
+    def test_manifest_names_vansh_and_every_reel_exists(self):
         data = manifest()
         self.assertEqual(data["coach"], NAME)
         self.assertEqual(data["origin"], ORIGIN)
-        for name in ("side_two_balls", "side_good_length", "behind_off_good"):
+        for name in REELS:
             self.assertTrue(clip(name)["path"].exists(), name)
 
-    def test_side_reel_cuts_into_two_deliveries(self):
-        segments = cut_video(clip("side_two_balls")["path"])
-        self.assertEqual(len(segments), manifest()["clips"]["side_two_balls"]["expect"]["deliveries"])
+    def test_the_session_reel_holds_two_balls(self):
+        item = clip("side_two_balls")
+        segments, how = find_deliveries(item["path"], item["calibration"])
+        self.assertEqual(how, "flights")
+        self.assertEqual(len(segments), item["expect"]["deliveries"])
+        for segment, truth in zip(segments, item["truth"]):
+            self.assertLessEqual(segment.t0, truth["release_t"])
+            self.assertGreaterEqual(segment.t1, truth["bounce_t"])
 
-    def test_side_reel_reads_a_good_length(self):
-        item = clip("side_good_length")
-        measured = analyse_clip(item["path"], 0.0, item["duration"], item["calibration"])
-        expect = item["expect"]
-        self.assertEqual(measured["pitch"]["length"], expect["length"])
-        self.assertGreaterEqual(measured["pace_kph"], expect["pace_min"])
-        self.assertLessEqual(measured["pace_kph"], expect["pace_max"])
-        self.assertEqual(measured["hit_stumps"], expect["hit_stumps"])
-
-    def test_behind_reel_reads_off_stump(self):
-        item = clip("behind_off_good")
-        measured = analyse_clip(item["path"], 0.0, item["duration"], item["calibration"])
-        expect = item["expect"]
-        self.assertEqual(measured["pitch"]["line"], expect["line"])
-        self.assertEqual(measured["pitch"]["length"], expect["length"])
-        self.assertEqual(measured["hit_stumps"], expect["hit_stumps"])
+    def test_single_ball_reels_read_their_truth(self):
+        for name in ("side_good_length", "behind_off_good"):
+            with self.subTest(name):
+                item = clip(name)
+                truth = item["truth"][0]
+                expect = item["expect"]
+                measured = analyse_clip(item["path"], truth["release_t"] - 1.0, truth["release_t"] + 1.6, item["calibration"])
+                self.assertNotEqual(measured["confidence"], "none", measured["note"])
+                self.assertEqual(measured["pitch"]["length"], expect["length"])
+                self.assertAlmostEqual(measured["pitch"]["length_m"], expect["length_m"], delta=expect["length_tolerance_m"])
+                if "line" in expect:
+                    self.assertEqual(measured["pitch"]["line"], expect["line"])
+                    self.assertAlmostEqual(measured["pitch"]["offset_m"], expect["offset_m"], delta=expect["offset_tolerance_m"])
+                else:
+                    self.assertAlmostEqual(measured["pace_kph"], expect["pace_kph"], delta=expect["pace_tolerance_kph"])
 
 
 class RawReelApiTests(unittest.TestCase):
     def setUp(self):
-        import tempfile
-
         self.tmp = tempfile.TemporaryDirectory()
         self.client = TestClient(create_app(Path(self.tmp.name)))
 
@@ -58,31 +79,38 @@ class RawReelApiTests(unittest.TestCase):
         self.assertIn("VANSH", page.text)
         self.assertIn("https://vansh.best", page.text)
 
-    def test_raw_reels_load_through_the_api(self):
-        side = self.client.post("/api/demo/session").json()
-        self.assertEqual(side["status"], "ready", side.get("error"))
-        self.assertEqual(len(side["deliveries"]), 2)
-        tracked = self.client.post("/api/demo/tracked").json()
-        self.assertEqual(tracked["status"], "ready", tracked.get("error"))
-        self.assertEqual(tracked["deliveries"][0]["pitch"]["length"], "good")
-        behind = self.client.post("/api/demo/behind").json()
-        self.assertEqual(behind["status"], "ready", behind.get("error"))
-        pitch = behind["deliveries"][0]["pitch"]
-        self.assertEqual(pitch["line"], "off")
-        self.assertEqual(pitch["length"], "good")
+    def test_two_cameras_line_up_and_share_one_ball(self):
+        session = self.client.post("/api/demo/pair").json()
+        session = wait_ready(self.client, session["id"])
+        self.assertEqual(session["status"], "ready", session.get("error"))
+        expect = clip("pair_behind")["expect"]
+        self.assertAlmostEqual(session["clock_offset"], expect["clock_offset"], delta=0.05)
+        self.assertEqual(len(session["deliveries"]), 1)
+        delivery = session["deliveries"][0]
+        self.assertEqual(set(delivery["tracks"]), {"side", "behind"})
+        self.assertAlmostEqual(delivery["pitch"]["length_m"], expect["length_m"], delta=expect["length_tolerance_m"])
+        self.assertIsNotNone(delivery["pitch"]["line"])
+        self.assertAlmostEqual(delivery["pace_kph"], expect["pace_kph"], delta=expect["pace_tolerance_kph"])
 
-    def test_upload_of_the_raw_side_reel(self):
-        path = clip("side_two_balls")["path"]
-        with path.open("rb") as handle:
+    def test_the_session_reel_is_cut_and_tracked_on_upload(self):
+        item = clip("side_two_balls")
+        # The lane remembers the calibration, as it would after the coach calibrates once.
+        first = self.client.post("/api/demo/tracked").json()
+        wait_ready(self.client, first["id"])
+        self.client.post(f"/api/sessions/{first['id']}/calibration/side", json=item["calibration"])
+        with item["path"].open("rb") as handle:
             response = self.client.post(
                 "/api/sessions",
-                data={"name": "VANSH reel", "role": "bowling"},
-                files={"side": ("side_two_balls.mp4", handle, "video/mp4")},
+                data={"name": "Tuesday nets", "role": "bowling"},
+                files={"side": ("side.mp4", handle, "video/mp4")},
             )
-        body = response.json()
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(body["status"], "ready", body.get("error"))
-        self.assertEqual(len(body["deliveries"]), 2)
+        self.assertEqual(response.status_code, 200, response.text)
+        session = wait_ready(self.client, response.json()["id"])
+        self.assertEqual(session["status"], "ready", session.get("error"))
+        self.assertEqual(session["found_by"], "flights")
+        self.assertEqual(len(session["deliveries"]), 2)
+        lengths = [delivery["pitch"]["length"] for delivery in session["deliveries"]]
+        self.assertEqual(lengths, ["good", "yorker"])
 
 
 if __name__ == "__main__":

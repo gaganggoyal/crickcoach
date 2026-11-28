@@ -5,7 +5,64 @@
     "side_two_balls": {
       "file": "side_two_balls.mp4",
       "camera": "side",
-      "note": "Two deliveries with a quiet gap between them.",
+      "note": "Two balls with a walk back between them, side-on.",
+      "fps": 25,
+      "duration": 20.0,
+      "calibration": {
+        "kind": "side",
+        "bowler_base": {
+          "x": 0.10364538987563647,
+          "y": 0.54885864423086
+        },
+        "bowler_top": {
+          "x": 0.10000678108519141,
+          "y": 0.4967278923877671
+        },
+        "batter_base": {
+          "x": 0.8965506570452525,
+          "y": 0.5483374726042807
+        },
+        "batter_top": {
+          "x": 0.8990506281654516,
+          "y": 0.4993449414652681
+        }
+      },
+      "truth": [
+        {
+          "pace_kph": 128,
+          "release_t": 3.0,
+          "release": [
+            -0.28,
+            1.0,
+            2.18
+          ],
+          "bounce_t": 3.3525,
+          "bounce_x": -0.25,
+          "bounce_y": 12.92,
+          "length_m": 7.2,
+          "at_stumps_x": -0.2164,
+          "at_stumps_z": 0.7107,
+          "hits_stumps": false,
+          "ball": "white"
+        },
+        {
+          "pace_kph": 134,
+          "release_t": 16.0,
+          "release": [
+            -0.28,
+            1.0,
+            2.18
+          ],
+          "bounce_t": 16.5012,
+          "bounce_x": 0.02,
+          "bounce_y": 18.52,
+          "length_m": 1.6,
+          "at_stumps_x": 0.0414,
+          "at_stumps_z": 0.2096,
+          "hits_stumps": true,
+          "ball": "red"
+        }
+      ],
       "expect": {
         "deliveries": 2
       }
@@ -13,60 +70,220 @@
     "side_good_length": {
       "file": "side_good_length.mp4",
       "camera": "side",
-      "note": "One side-on ball pitching on a good length.",
-      "expect": {
-        "length": "good",
-        "pace_min": 40,
-        "pace_max": 180,
-        "hit_stumps": false
-      },
-      "duration": 1.0,
+      "note": "One red ball on a good length, side-on.",
+      "fps": 25,
+      "duration": 3.0,
       "calibration": {
         "kind": "side",
-        "bowling": {
-          "x": 0.125,
-          "y": 0.7777777777777778
+        "bowler_base": {
+          "x": 0.10364538987563647,
+          "y": 0.54885864423086
         },
-        "batting": {
-          "x": 0.875,
-          "y": 0.8333333333333334
+        "bowler_top": {
+          "x": 0.10000678108519141,
+          "y": 0.4967278923877671
         },
-        "stump_top": {
-          "x": 0.875,
-          "y": 0.6111111111111112
+        "batter_base": {
+          "x": 0.8965506570452525,
+          "y": 0.5483374726042807
+        },
+        "batter_top": {
+          "x": 0.8990506281654516,
+          "y": 0.4993449414652681
         }
+      },
+      "truth": [
+        {
+          "pace_kph": 131,
+          "release_t": 1.2,
+          "release": [
+            -0.28,
+            1.0,
+            2.18
+          ],
+          "bounce_t": 1.5504,
+          "bounce_x": -0.22,
+          "bounce_y": 13.12,
+          "length_m": 7.0,
+          "at_stumps_x": -0.1744,
+          "at_stumps_z": 0.696,
+          "hits_stumps": false,
+          "ball": "red"
+        }
+      ],
+      "expect": {
+        "length": "good",
+        "length_m": 7.0,
+        "length_tolerance_m": 0.6,
+        "pace_kph": 131,
+        "pace_tolerance_kph": 12.0
       }
     },
     "behind_off_good": {
       "file": "behind_off_good.mp4",
       "camera": "behind",
-      "note": "One ball from behind the bowler, good length on off stump.",
-      "expect": {
-        "line": "off",
-        "length": "good",
-        "hit_stumps": false
-      },
-      "duration": 1.0,
+      "note": "One white ball, good length outside off, from behind the bowler.",
+      "fps": 50,
+      "duration": 3.0,
       "calibration": {
         "kind": "behind",
         "corners": [
           {
-            "x": 0.2,
-            "y": 0.8
+            "x": 0.36854115716878155,
+            "y": 0.8909641888993952
           },
           {
-            "x": 0.8,
-            "y": 0.8
+            "x": 0.6312057344470372,
+            "y": 0.8880131119895265
           },
           {
-            "x": 0.8,
-            "y": 0.2
+            "x": 0.5522971510286837,
+            "y": 0.20131974215062634
           },
           {
-            "x": 0.2,
-            "y": 0.2
+            "x": 0.4472094135270294,
+            "y": 0.20150688594483793
           }
         ]
+      },
+      "truth": [
+        {
+          "pace_kph": 124,
+          "release_t": 1.2,
+          "release": [
+            -0.28,
+            1.0,
+            2.18
+          ],
+          "bounce_t": 1.5576,
+          "bounce_x": -0.32,
+          "bounce_y": 12.72,
+          "length_m": 7.4,
+          "at_stumps_x": -0.3619,
+          "at_stumps_z": 0.7215,
+          "hits_stumps": false,
+          "ball": "white"
+        }
+      ],
+      "expect": {
+        "length": "good",
+        "length_m": 7.4,
+        "length_tolerance_m": 0.6,
+        "pace_kph": 124,
+        "pace_tolerance_kph": 12.0,
+        "line": "outside off",
+        "offset_m": -0.32,
+        "offset_tolerance_m": 0.15
+      }
+    },
+    "pair_side": {
+      "file": "pair_side.mp4",
+      "camera": "side",
+      "note": "One ball, side camera.",
+      "fps": 25,
+      "duration": 3.6,
+      "calibration": {
+        "kind": "side",
+        "bowler_base": {
+          "x": 0.10364538987563647,
+          "y": 0.54885864423086
+        },
+        "bowler_top": {
+          "x": 0.10000678108519141,
+          "y": 0.4967278923877671
+        },
+        "batter_base": {
+          "x": 0.8965506570452525,
+          "y": 0.5483374726042807
+        },
+        "batter_top": {
+          "x": 0.8990506281654516,
+          "y": 0.4993449414652681
+        }
+      },
+      "truth": [
+        {
+          "pace_kph": 138,
+          "release_t": 1.6,
+          "release": [
+            -0.28,
+            1.0,
+            2.18
+          ],
+          "bounce_t": 1.9891,
+          "bounce_x": 0.05,
+          "bounce_y": 15.12,
+          "length_m": 5.0,
+          "at_stumps_x": 0.1724,
+          "at_stumps_z": 0.5177,
+          "hits_stumps": false,
+          "ball": "white"
+        }
+      ],
+      "expect": {
+        "length": "full",
+        "length_m": 5.0,
+        "length_tolerance_m": 0.6,
+        "pace_kph": 138,
+        "pace_tolerance_kph": 12.0
+      }
+    },
+    "pair_behind": {
+      "file": "pair_behind.mp4",
+      "camera": "behind",
+      "note": "The same ball from behind, started 0.8 s later.",
+      "fps": 50,
+      "duration": 3.0,
+      "calibration": {
+        "kind": "behind",
+        "corners": [
+          {
+            "x": 0.36854115716878155,
+            "y": 0.8909641888993952
+          },
+          {
+            "x": 0.6312057344470372,
+            "y": 0.8880131119895265
+          },
+          {
+            "x": 0.5522971510286837,
+            "y": 0.20131974215062634
+          },
+          {
+            "x": 0.4472094135270294,
+            "y": 0.20150688594483793
+          }
+        ]
+      },
+      "truth": [
+        {
+          "pace_kph": 138,
+          "release_t": 0.8,
+          "release": [
+            -0.28,
+            1.0,
+            2.18
+          ],
+          "bounce_t": 1.1891,
+          "bounce_x": 0.05,
+          "bounce_y": 15.12,
+          "length_m": 5.0,
+          "at_stumps_x": 0.1724,
+          "at_stumps_z": 0.5177,
+          "hits_stumps": false,
+          "ball": "white"
+        }
+      ],
+      "expect": {
+        "length": "full",
+        "length_m": 5.0,
+        "length_tolerance_m": 0.6,
+        "pace_kph": 138,
+        "pace_tolerance_kph": 12.0,
+        "line": "leg stump",
+        "offset_m": 0.05,
+        "offset_tolerance_m": 0.15,
+        "clock_offset": -0.8
       }
     }
   }

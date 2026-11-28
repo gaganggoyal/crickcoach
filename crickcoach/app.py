@@ -2,30 +2,46 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
+import secrets
+import shutil
+import socket
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from crickcoach import NAME, ORIGIN, __version__
+from crickcoach import certificate as cert
+from crickcoach.assess import AGE_GROUPS, DISCIPLINES, assess
+from crickcoach.auth import COOKIE, DAYS, Auth
 from crickcoach.cues import coach, parse_frames
 from crickcoach.drill import drill_plan
-from crickcoach.flight import analyse_clip
 from crickcoach.footage import copy_clip
-from crickcoach.machine_link import MachineLink, listen_radar
-from crickcoach.pitch import LENGTHS, LINES, describe_pitch
+from crickcoach.geometry import ground_plane, side_plane
+from crickcoach.guide import DOCS
+from crickcoach.guide import render as render_guide
+from crickcoach.home import render as render_home
+from crickcoach.machine_link import MachineLink, command_for, listen_radar
+from crickcoach.pitch import LENGTHS, LINES, clean_line, describe, target_for
+from crickcoach.process import Busy, recover, refresh, submit, track_one
 from crickcoach.samples import CATALOG, sample_payload
 from crickcoach.store import Store, check_delivery_id, now_iso
-from crickcoach.video import cut_video, record_rtsp
+from crickcoach.verify import certificate_page, lookup_page
+from crickcoach.video import redact
 
 ROOT = Path(__file__).resolve().parent.parent
 WEB = Path(__file__).resolve().parent / "web"
-MAX_BYTES = 250 * 1024 * 1024
+FONTS = Path(__file__).resolve().parent / "fonts"
+MAX_BYTES = 600 * 1024 * 1024
 VIDEO_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
@@ -33,30 +49,40 @@ VIDEO_TYPES = {
     ".mkv": "video/x-matroska",
     ".avi": "video/x-msvideo",
 }
+OUTCOMES = ("left", "defended", "attacked", "missed", "edged", "bowled")
+PUBLIC_API = {"/api/health", "/api/me", "/api/login", "/api/logout", "/api/samples", "/api/live/cues"}
+SIDE_KEYS = ("bowler_base", "bowler_top", "batter_base", "batter_top")
+SERIES_ID = re.compile(r"^r[a-f0-9]{8}$")
+RECORDING = ("starting", "recording")
+ONLINE_S = 40
+MAX_LOGO_BYTES = 3 * 1024 * 1024
+NOINDEX = {"X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-cache"}
 
 
 class LiveBody(BaseModel):
     role: str
-    frames: list[dict]
+    frames: list[dict] = Field(max_length=240)
 
 
 class SnapshotBody(BaseModel):
     name: str = "Live ball"
     role: str
-    frames: list[dict]
+    frames: list[dict] = Field(max_length=240)
 
 
 class PoseBody(BaseModel):
-    frames: list[dict]
+    frames: list[dict] = Field(max_length=240)
 
 
 class PitchBody(BaseModel):
-    x: float
-    y: float
+    length_m: float | None = None
+    offset_m: float | None = None
+    clear: bool = False
 
 
 class PaceBody(BaseModel):
     pace_kph: float | None = None
+    source: str = "manual"
 
 
 class MachineBody(BaseModel):
@@ -64,6 +90,7 @@ class MachineBody(BaseModel):
     line: str
     length: str
     note: str = ""
+    batter: str = "right"
     session_id: str | None = None
     delivery_id: str | None = None
 
@@ -78,14 +105,16 @@ class CameraBody(BaseModel):
 
 class CalibrationBody(BaseModel):
     kind: str
-    bowling: dict | None = None
-    batting: dict | None = None
-    stump_top: dict | None = None
+    bowler_base: dict | None = None
+    bowler_top: dict | None = None
+    batter_base: dict | None = None
+    batter_top: dict | None = None
     corners: list[dict] | None = None
+    distance_m: float | None = Field(default=None, ge=2, le=60)
 
 
 class OutcomeBody(BaseModel):
-    outcome: str
+    outcome: str | None = None
 
 
 class RadarBody(BaseModel):
@@ -94,18 +123,87 @@ class RadarBody(BaseModel):
 
 class DrillBody(BaseModel):
     session_id: str | None = None
-    count: int = 6
+    series_id: str | None = None
+    count: int = Field(default=6, ge=1, le=18)
 
 
-OUTCOMES = ("left", "defended", "attacked", "missed", "edged", "hit")
+class NetsStart(BaseModel):
+    name: str = Field(default="Net session", max_length=80)
+    role: str = "bowling"
+    batter: str = "right"
+
+
+class EdgeStatus(BaseModel):
+    state: str = Field(default="idle", max_length=20)
+    recording_id: str | None = Field(default=None, max_length=20)
+    cameras: dict = Field(default_factory=dict)
+    queue: int = Field(default=0, ge=0)
+    queue_mb: float = Field(default=0, ge=0)
+    sent: int = Field(default=0, ge=0)
+    uploading: str | None = Field(default=None, max_length=120)
+    error: str = Field(default="", max_length=600)
+    host: str = Field(default="", max_length=80)
+    version: str = Field(default="", max_length=20)
+    take_seconds: int | None = Field(default=None, ge=3, le=900)
+
+
+class CameraCheckBody(BaseModel):
+    cameras: dict = Field(default_factory=dict)
+
+
+class AssessBody(BaseModel):
+    source: str = Field(max_length=40)
+    player: str = Field(default="", max_length=80)
+    discipline: str = "pace"
+    age_group: str = "open"
+
+
+class AcademyBody(BaseModel):
+    name: str = Field(default="", max_length=80)
+    city: str = Field(default="", max_length=50)
+    coach: str = Field(default="", max_length=70)
+    role: str = Field(default="", max_length=50)
+
+
+class RevokeBody(BaseModel):
+    reason: str = Field(default="", max_length=200)
+
+
+class LoginBody(BaseModel):
+    key: str = Field(max_length=200)
+
+
+class SessionPatch(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    batter: str | None = None
+    clock_offset: float | None = Field(default=None, ge=-60, le=60)
+
+
+class DeliveryBody(BaseModel):
+    t0: float = Field(ge=0)
+    t1: float = Field(ge=0)
+
+
+class DoneBody(BaseModel):
+    ok: bool = True
+    error: str = ""
 
 
 def create_app(data_dir: Path | None = None) -> FastAPI:
     store = Store(data_dir or Path(_setting("VANSH_DATA", "CRICKCOACH_DATA", default=str(ROOT / "data"))))
-    app = FastAPI(title=NAME, version=__version__)
+    recover(store)
+    auth = Auth(_setting("VANSH_COACH_KEY"), store.secret())
+    app = FastAPI(title=NAME, version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
+    app.state.auth = auth
     app.state.machine = MachineLink(_setting("VANSH_MACHINE", "CRICKCOACH_MACHINE"))
     app.state.radar = {"pace_kph": None, "at": None}
+    app.state.wake = threading.Condition()
+    max_bytes = int(float(_setting("VANSH_MAX_GB", default="20")) * 1024**3)
+    origin = _setting("VANSH_ORIGIN", default=ORIGIN)
+    zone = _setting("VANSH_TIMEZONE", default="Asia/Kolkata")
+    allow_rtsp = _flag("VANSH_ALLOW_RTSP", default=not auth.required)
+    rtsp_private = _flag("VANSH_RTSP_PRIVATE", default=not auth.required)
     radar_port = _setting("VANSH_RADAR_PORT", "CRICKCOACH_RADAR_PORT")
     if radar_port and radar_port.isdigit():
         threading.Thread(
@@ -113,6 +211,30 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             args=(int(radar_port), app.state.radar, threading.Event()),
             daemon=True,
         ).start()
+
+    @app.middleware("http")
+    async def guard(request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/api/") and auth.required and not _public(path) and not _signed_in(request, auth):
+            return JSONResponse({"detail": "Sign in as the coach first."}, status_code=401)
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(), geolocation=()")
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net 'wasm-unsafe-eval'; "
+                "connect-src 'self' https://cdn.jsdelivr.net https://storage.googleapis.com; "
+                "img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
+                "worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            )
+        if path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+    # -- who is here ------------------------------------------------------
 
     @app.get("/api/health")
     def health() -> dict:
@@ -129,10 +251,47 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             "ok": True,
             "name": NAME,
             "origin": ORIGIN,
+            "version": __version__,
             "ffmpeg": ffmpeg_ok,
             "detail": detail,
             "machine": app.state.machine.mode,
+            "auth_required": auth.required,
         }
+
+    @app.get("/api/me")
+    def me(request: Request) -> dict:
+        return {"coach": _signed_in(request, auth), "auth_required": auth.required, "rtsp": allow_rtsp}
+
+    @app.post("/api/login")
+    def login(body: LoginBody, request: Request) -> Response:
+        if not auth.required:
+            return JSONResponse({"coach": True})
+        client = request.client.host if request.client else "unknown"
+        if not auth.allow_attempt(client):
+            raise HTTPException(429, "Too many tries. Wait ten minutes.")
+        if not auth.check_key(body.key):
+            time.sleep(0.4)
+            raise HTTPException(401, "That is not the coach key.")
+        auth.forget(client)
+        response = JSONResponse({"coach": True})
+        response.set_cookie(
+            COOKIE,
+            auth.token(),
+            max_age=DAYS * 86400,
+            httponly=True,
+            samesite="lax",
+            secure=request.url.scheme == "https",
+            path="/",
+        )
+        return response
+
+    @app.post("/api/logout")
+    def logout() -> Response:
+        response = JSONResponse({"coach": False})
+        response.delete_cookie(COOKIE, path="/")
+        return response
+
+    # -- the lane: samples and live cues are open to anyone -------------------
 
     @app.get("/api/samples")
     def list_samples() -> dict:
@@ -158,6 +317,117 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         frames = parse_frames(body.frames)
         return {"role": role, "cues": [cue.to_dict() for cue in coach(role, frames)]}
 
+    # -- recording at the nets ----------------------------------------------------
+    #
+    # The coach presses Start on this screen. The bridge at the nets, which
+    # waits on /api/nets/poll, starts both cameras and sends a take every
+    # minute or two. Each take becomes a session in the recording's series.
+
+    @app.get("/api/nets")
+    def nets_status() -> dict:
+        return _nets_view(store.nets())
+
+    @app.post("/api/nets/start")
+    def nets_start(body: NetsStart) -> dict:
+        role = _role(body.role)
+        batter = _batter(body.batter)
+
+        def change(nets: dict) -> None:
+            current = nets.get("recording")
+            if current and current["state"] in (*RECORDING, "stopping"):
+                raise HTTPException(409, "A recording is already running. Stop it first.")
+            nets["recording"] = {
+                "id": "r" + secrets.token_hex(4),
+                "name": body.name.strip()[:80] or "Net session",
+                "role": role,
+                "batter": batter,
+                "state": "starting",
+                "requested": now_iso(),
+                "started": None,
+                "stopped": None,
+                "takes": 0,
+            }
+            nets["version"] += 1
+
+        nets, _ = store.update_nets(change)
+        _wake(app)
+        return _nets_view(nets)
+
+    @app.post("/api/nets/stop")
+    def nets_stop() -> dict:
+        def change(nets: dict) -> None:
+            recording = nets.get("recording")
+            if not recording or recording["state"] not in (*RECORDING, "stopping"):
+                raise HTTPException(409, "Nothing is recording.")
+            if recording["state"] == "recording":
+                recording["state"] = "stopping"
+                recording["stop_requested"] = now_iso()
+            else:
+                # Never started, or a second press while the bridge is quiet: stop at once.
+                _finish_recording(nets, recording)
+            nets["version"] += 1
+
+        nets, _ = store.update_nets(change)
+        _wake(app)
+        return _nets_view(nets)
+
+    @app.get("/api/nets/poll")
+    def nets_poll(since: int = -1, wait: float = 0.0) -> dict:
+        """For the bridge at the nets: the recording it should be making. wait long-polls."""
+        deadline = time.time() + max(0.0, min(wait, 25.0))
+        store.update_nets(_mark_seen)
+        with app.state.wake:
+            while store.nets()["version"] <= since and time.time() < deadline:
+                app.state.wake.wait(timeout=max(0.0, deadline - time.time()))
+        nets = store.nets()
+        return {"version": nets["version"], "recording": nets.get("recording")}
+
+    @app.post("/api/nets/status")
+    def nets_report(body: EdgeStatus) -> dict:
+        def change(nets: dict) -> bool:
+            before = nets["version"]
+            nets["edge"] = {
+                "seen": now_iso(),
+                "state": body.state if body.state in {"idle", "recording"} else "idle",
+                "recording_id": body.recording_id,
+                "cameras": _camera_reports(body.cameras),
+                "queue": body.queue,
+                "queue_mb": round(body.queue_mb, 1),
+                "sent": body.sent,
+                "uploading": redact(body.uploading or "") or None,
+                "error": redact(body.error),
+                "host": body.host,
+                "version": body.version,
+                "take_seconds": body.take_seconds,
+            }
+            recording = nets.get("recording")
+            if recording and recording["state"] == "starting" and body.state == "recording" \
+                    and body.recording_id == recording["id"]:
+                recording["state"] = "recording"
+                recording["started"] = now_iso()
+                nets["version"] += 1
+            if recording and recording["state"] == "stopping" and \
+                    (body.state == "idle" or body.recording_id != recording["id"]):
+                _finish_recording(nets, recording)
+                nets["version"] += 1
+            return nets["version"] != before
+
+        nets, changed = store.update_nets(change)
+        if changed:
+            _wake(app)
+        return {"version": nets["version"], "recording": nets.get("recording")}
+
+    @app.post("/api/nets/check")
+    def nets_check(body: CameraCheckBody) -> dict:
+        """The bridge's camera check, so the coach can see it from here."""
+        def change(nets: dict) -> None:
+            nets["check"] = {"at": now_iso(), "cameras": _camera_reports(body.cameras)}
+
+        nets, _ = store.update_nets(change)
+        return _nets_view(nets)
+
+    # -- sessions -------------------------------------------------------------
+
     @app.post("/api/snapshots")
     def snapshot(body: SnapshotBody) -> dict:
         role = _role(body.role)
@@ -166,78 +436,123 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(400, "Hold the pose for a moment, then save.")
         cues = [cue.to_dict() for cue in coach(role, frames)]
         session = store.create_session(name=body.name, role=role, status="ready")
-        session["deliveries"] = [
-            _delivery(1, frames[0].t, frames[-1].t, cues=cues, camera="live")
-        ]
+        delivery = _blank_delivery(1, frames[0].t, frames[-1].t, camera="live")
+        delivery["cues"] = cues
+        session["deliveries"] = [delivery]
         return store.save(session)
 
     @app.get("/api/sessions")
     def list_sessions() -> dict:
-        return {"sessions": store.list_sessions()}
+        return {"sessions": store.list_sessions(), "disk_gb": round(store.disk_bytes() / 1024**3, 2)}
 
     @app.post("/api/sessions")
     async def create_session(
         name: str = Form("Net session"),
         role: str = Form("bowling"),
-        side: UploadFile = File(...),
+        batter: str = Form("right"),
+        side: UploadFile | None = File(None),
         behind: UploadFile | None = File(None),
+        series_id: str = Form(""),
+        series_name: str = Form(""),
+        take: int = Form(0),
     ) -> dict:
         role = _role(role)
+        if (side is None or not side.filename) and (behind is None or not behind.filename):
+            raise HTTPException(400, "Upload a video from at least one camera.")
+        series = None
+        if series_id:
+            if not SERIES_ID.fullmatch(series_id) or not 1 <= take <= 9999:
+                raise HTTPException(400, "That take does not belong to a recording.")
+            series = {"id": series_id, "name": (series_name or name).strip()[:80] or "Net session", "take": take}
+        if store.disk_bytes() > max_bytes:
+            store.free_video(int(max_bytes * 0.85))
+            if store.disk_bytes() > max_bytes:
+                raise HTTPException(507, "The server is full. Delete old sessions first.")
         session = store.create_session(name=name, role=role, status="processing")
+        session["series"] = series
         try:
-            side_name = await _save_upload(side, store.folder(session["id"]), "side")
-            session["cameras"]["side"] = side_name
-            if behind is not None and behind.filename:
-                session["cameras"]["behind"] = await _save_upload(
-                    behind, store.folder(session["id"]), "behind"
-                )
-            segments = cut_video(store.folder(session["id"]) / side_name)
-            session["deliveries"] = [
-                _delivery(index, segment.t0, segment.t1, note=segment.note)
-                for index, segment in enumerate(segments, start=1)
-            ]
-            session["status"] = "ready"
+            for camera, upload in (("side", side), ("behind", behind)):
+                if upload is not None and upload.filename:
+                    session["cameras"][camera] = await _save_upload(upload, store.folder(session["id"]), camera)
         except HTTPException:
             store.delete(session["id"])
             raise
-        except Exception as exc:
-            session["status"] = "error"
-            session["error"] = str(exc)
-        return store.save(session)
+        session["batter"] = _batter(batter)
+        store.save(session)
+        submit(store, session["id"], "find")
+        if series:
+            _count_take(store, series)
+        return store.get(session["id"])
 
     @app.post("/api/cameras")
     def record_cameras(body: CameraBody) -> dict:
+        if not allow_rtsp:
+            raise HTTPException(
+                403,
+                "This server does not reach into camera networks. Run the edge recorder at the nets "
+                "(python -m crickcoach.edge) to send recordings here.",
+            )
         role = _role(body.role)
-        side_url = _rtsp(body.side_url)
-        behind_url = _rtsp(body.behind_url) if body.behind_url else None
+        side_url = _rtsp(body.side_url, rtsp_private)
+        behind_url = _rtsp(body.behind_url, rtsp_private) if body.behind_url else None
         session = store.create_session(name=body.name, role=role, status="recording")
         session["cameras"]["side"] = "side.mp4"
         if behind_url:
             session["cameras"]["behind"] = "behind.mp4"
         store.save(session)
-        thread = threading.Thread(
+        threading.Thread(
             target=_record_job,
             args=(store, session["id"], side_url, behind_url, body.seconds),
             daemon=True,
-        )
-        thread.start()
+        ).start()
         return session
 
-    @app.post("/api/demo/session")
-    def demo_session() -> dict:
-        return _raw_session(store, "side_two_balls", "VANSH raw side clip", camera="side", cut=True)
-
-    @app.post("/api/demo/tracked")
-    def demo_tracked() -> dict:
-        return _raw_session(store, "side_good_length", "VANSH raw tracked ball", camera="side", cut=False)
-
-    @app.post("/api/demo/behind")
-    def demo_behind() -> dict:
-        return _raw_session(store, "behind_off_good", "VANSH raw behind ball", camera="behind", cut=False)
+    @app.post("/api/demo/{name}")
+    def demo(name: str) -> dict:
+        reels = {
+            "session": ("side_two_balls", "VANSH raw side session", ("side",)),
+            "tracked": ("side_good_length", "VANSH raw side ball", ("side",)),
+            "behind": ("behind_off_good", "VANSH raw behind ball", ("behind",)),
+            "pair": ("pair", "VANSH raw two-camera ball", ("side", "behind")),
+        }
+        if name not in reels:
+            raise HTTPException(404, "Unknown reel.")
+        clip_name, title, cameras = reels[name]
+        session = store.create_session(name=title, role="bowling", status="processing")
+        try:
+            for camera in cameras:
+                item = copy_clip(f"{clip_name}_{camera}" if clip_name == "pair" else clip_name,
+                                 store.folder(session["id"]) / f"{camera}.mp4")
+                session["cameras"][camera] = f"{camera}.mp4"
+                session["calibration"][camera] = item.get("calibration")
+        except FileNotFoundError as exc:
+            store.delete(session["id"])
+            raise HTTPException(404, str(exc)) from exc
+        store.save(session)
+        submit(store, session["id"], "find")
+        return store.get(session["id"])
 
     @app.get("/api/sessions/{session_id}")
     def get_session(session_id: str) -> dict:
         return _session_or_404(store, session_id)
+
+    @app.patch("/api/sessions/{session_id}")
+    def patch_session(session_id: str, body: SessionPatch) -> dict:
+        def change(session: dict) -> None:
+            if body.name is not None:
+                session["name"] = body.name.strip() or session["name"]
+            if body.batter is not None:
+                session["batter"] = _batter(body.batter)
+                for delivery in session.get("deliveries") or []:
+                    if delivery.get("pitch_source") == "manual" and delivery.get("pitch"):
+                        pitch = delivery["pitch"]
+                        delivery["pitch"] = describe(pitch["length_m"], pitch.get("offset_m"), session["batter"])
+                    refresh(delivery, session["batter"])
+            if body.clock_offset is not None:
+                session["clock_offset"] = round(body.clock_offset, 3)
+                session["clock_note"] = "set by the coach"
+
+        return _update_or_404(store, session_id, change)[0]
 
     @app.delete("/api/sessions/{session_id}")
     def delete_session(session_id: str) -> dict:
@@ -259,125 +574,218 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         if not path.exists():
             raise HTTPException(404, "The video file is missing.")
         media_type = VIDEO_TYPES.get(path.suffix.lower(), "application/octet-stream")
-        return FileResponse(path, media_type=media_type, filename=filename)
-
-    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/pose")
-    def add_pose(session_id: str, delivery_id: str, body: PoseBody) -> dict:
-        session = _session_or_404(store, session_id)
-        delivery = _delivery_or_404(session, delivery_id)
-        frames = parse_frames(body.frames)
-        if len(frames) < 2:
-            raise HTTPException(400, "Need at least two pose frames.")
-        delivery["cues"] = [cue.to_dict() for cue in coach(session["role"], frames)]
-        delivery["pose_note"] = ""
-        if any(cue["code"] == "nobody" for cue in delivery["cues"]):
-            delivery["pose_note"] = "No player was found in these frames."
-        store.save(session)
-        return delivery
-
-    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/pitch")
-    def mark_pitch(session_id: str, delivery_id: str, body: PitchBody) -> dict:
-        session = _session_or_404(store, session_id)
-        delivery = _delivery_or_404(session, delivery_id)
-        delivery["pitch"] = describe_pitch(body.x, body.y)
-        store.save(session)
-        return delivery
-
-    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/pace")
-    def mark_pace(session_id: str, delivery_id: str, body: PaceBody) -> dict:
-        session = _session_or_404(store, session_id)
-        delivery = _delivery_or_404(session, delivery_id)
-        delivery["pace_kph"] = _pace(body.pace_kph)
-        store.save(session)
-        return delivery
+        return FileResponse(path, media_type=media_type)
 
     @app.post("/api/sessions/{session_id}/calibration/{camera}")
     def calibrate(session_id: str, camera: str, body: CalibrationBody) -> dict:
         if camera not in {"side", "behind"}:
             raise HTTPException(404, "Unknown camera.")
+        saved = _calibration(camera, body)
+
+        def change(session: dict) -> None:
+            session.setdefault("calibration", {"side": None, "behind": None})
+            session["calibration"][camera] = saved
+
+        session, _ = _update_or_404(store, session_id, change)
+        store.save_lane_camera(camera, saved)
+        return session
+
+    @app.post("/api/sessions/{session_id}/find")
+    def find_again(session_id: str) -> dict:
         session = _session_or_404(store, session_id)
-        session.setdefault("calibration", {"side": None, "behind": None})
-        session["calibration"][camera] = _calibration(camera, body)
-        return store.save(session)
+        if session.get("job"):
+            raise HTTPException(409, "This session is already being worked on.")
+        submit(store, session_id, "find")
+        return store.get(session_id)
+
+    @app.post("/api/sessions/{session_id}/track")
+    def track_all(session_id: str) -> dict:
+        session = _session_or_404(store, session_id)
+        if session.get("job"):
+            raise HTTPException(409, "This session is already being worked on.")
+        if not session.get("deliveries"):
+            raise HTTPException(400, "Find the balls first.")
+        submit(store, session_id, "track")
+        return store.get(session_id)
+
+    @app.get("/api/lane")
+    def lane() -> dict:
+        return store.get_lane()
+
+    # -- one ball ---------------------------------------------------------------
+
+    @app.post("/api/sessions/{session_id}/deliveries")
+    def add_delivery(session_id: str, body: DeliveryBody) -> dict:
+        if body.t1 <= body.t0 or body.t1 - body.t0 > 20:
+            raise HTTPException(400, "A ball window runs forwards and lasts under 20 seconds.")
+
+        def change(session: dict) -> dict:
+            deliveries = session.setdefault("deliveries", [])
+            index = max((item["index"] for item in deliveries), default=0) + 1
+            camera = "side" if (session.get("cameras") or {}).get("side") else "behind"
+            delivery = _blank_delivery(index, body.t0, body.t1, camera=camera)
+            delivery["cut_note"] = "Marked by the coach."
+            deliveries.append(delivery)
+            deliveries.sort(key=lambda item: item["t0"])
+            return delivery
+
+        return _update_or_404(store, session_id, change)[1]
+
+    @app.delete("/api/sessions/{session_id}/deliveries/{delivery_id}")
+    def remove_delivery(session_id: str, delivery_id: str) -> dict:
+        _check_delivery(delivery_id)
+
+        def change(session: dict) -> None:
+            before = len(session.get("deliveries") or [])
+            session["deliveries"] = [item for item in session.get("deliveries") or [] if item["id"] != delivery_id]
+            if len(session["deliveries"]) == before:
+                raise KeyError(delivery_id)
+
+        return _update_or_404(store, session_id, change)[0]
+
+    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/pose")
+    def add_pose(session_id: str, delivery_id: str, body: PoseBody) -> dict:
+        frames = parse_frames(body.frames)
+        if len(frames) < 2:
+            raise HTTPException(400, "Need at least two pose frames.")
+
+        def change(session: dict) -> dict:
+            delivery = _find_delivery(session, delivery_id)
+            delivery["cues"] = [cue.to_dict() for cue in coach(session["role"], frames)]
+            delivery["pose_note"] = ""
+            if any(cue["code"] == "nobody" for cue in delivery["cues"]):
+                delivery["pose_note"] = "No player was found in these frames."
+            return delivery
+
+        return _update_or_404(store, session_id, change)[1]
+
+    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/pitch")
+    def mark_pitch(session_id: str, delivery_id: str, body: PitchBody) -> dict:
+        if not body.clear:
+            if body.length_m is None or not -1 <= body.length_m <= 21:
+                raise HTTPException(400, "Mark a length between the stumps.")
+            if body.offset_m is not None and not -3 <= body.offset_m <= 3:
+                raise HTTPException(400, "Mark a line on the pitch.")
+
+        def change(session: dict) -> dict:
+            delivery = _find_delivery(session, delivery_id)
+            if body.clear:
+                delivery["pitch_source"] = None
+                refresh(delivery, session.get("batter", "right"))
+            else:
+                delivery["pitch"] = describe(body.length_m, body.offset_m, session.get("batter", "right"))
+                delivery["pitch_source"] = "manual"
+                delivery["confidence"] = "ok"
+            return delivery
+
+        return _update_or_404(store, session_id, change)[1]
+
+    @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/pace")
+    def mark_pace(session_id: str, delivery_id: str, body: PaceBody) -> dict:
+        pace = _pace(body.pace_kph)
+        source = "radar" if body.source == "radar" else "manual"
+
+        def change(session: dict) -> dict:
+            delivery = _find_delivery(session, delivery_id)
+            if pace is None:
+                delivery["pace_source"] = None
+                refresh(delivery, session.get("batter", "right"))
+            else:
+                delivery["pace_kph"] = pace
+                delivery["pace_source"] = source
+            return delivery
+
+        return _update_or_404(store, session_id, change)[1]
 
     @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/track")
     def track_delivery(session_id: str, delivery_id: str, camera: str = "side") -> dict:
         if camera not in {"side", "behind"}:
             raise HTTPException(400, "Camera must be side or behind.")
+        _check_delivery(delivery_id)
         session = _session_or_404(store, session_id)
-        delivery = _delivery_or_404(session, delivery_id)
-        calibration = (session.get("calibration") or {}).get(camera)
-        if not calibration:
+        _find_delivery_or_404(session, delivery_id)
+        if not (session.get("calibration") or {}).get(camera):
             raise HTTPException(400, "Calibrate this camera first.")
-        filename = (session.get("cameras") or {}).get(camera)
-        if not filename:
+        if not (session.get("cameras") or {}).get(camera):
             raise HTTPException(404, "That camera has no video.")
-        path = store.folder(session_id) / filename
         try:
-            measured = analyse_clip(path, float(delivery["t0"]), float(delivery["t1"]), calibration)
-        except RuntimeError as exc:
+            return track_one(store, session_id, delivery_id, camera)
+        except Busy as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except (RuntimeError, ValueError) as exc:
             raise HTTPException(400, str(exc)) from exc
-        _apply_tracking(delivery, measured)
-        store.save(session)
-        return delivery
+        except KeyError:
+            raise HTTPException(404, "Delivery not found.") from None
 
     @app.post("/api/sessions/{session_id}/deliveries/{delivery_id}/outcome")
     def mark_outcome(session_id: str, delivery_id: str, body: OutcomeBody) -> dict:
-        outcome = body.outcome.strip().lower()
-        if outcome not in OUTCOMES:
-            raise HTTPException(400, "Outcome must be left, defended, attacked, missed, edged, or hit.")
-        session = _session_or_404(store, session_id)
-        delivery = _delivery_or_404(session, delivery_id)
-        delivery["outcome"] = outcome
-        store.save(session)
-        return delivery
+        outcome = (body.outcome or "").strip().lower() or None
+        if outcome == "hit":
+            outcome = "bowled"
+        if outcome is not None and outcome not in OUTCOMES:
+            raise HTTPException(400, "Outcome must be left, defended, attacked, missed, edged, or bowled.")
+
+        def change(session: dict) -> dict:
+            delivery = _find_delivery(session, delivery_id)
+            delivery["outcome"] = outcome
+            return delivery
+
+        return _update_or_404(store, session_id, change)[1]
+
+    # -- radar, progress and the machine ----------------------------------------
 
     @app.get("/api/radar")
     def radar() -> dict:
-        return app.state.radar
+        return dict(app.state.radar)
 
     @app.post("/api/radar")
     def set_radar(body: RadarBody) -> dict:
-        app.state.radar = {"pace_kph": _pace(body.pace_kph), "at": now_iso()}
-        return app.state.radar
+        app.state.radar.update(pace_kph=_pace(body.pace_kph), at=now_iso())
+        return dict(app.state.radar)
 
     @app.get("/api/progress")
     def progress() -> dict:
-        deliveries = _all_deliveries(store)
+        deliveries = store.all_deliveries()
         plan = drill_plan(deliveries, count=6)
         paces = [delivery["pace_kph"] for delivery in deliveries if delivery.get("pace_kph")]
         counts: dict[str, int] = {}
+        lengths: dict[str, int] = {}
         for delivery in deliveries:
             outcome = delivery.get("outcome")
             if outcome:
                 counts[outcome] = counts.get(outcome, 0) + 1
+            length = (delivery.get("pitch") or {}).get("length")
+            if length:
+                lengths[length] = lengths.get(length, 0) + 1
         return {
             "balls": len(deliveries),
             "outcomes": counts,
+            "lengths": lengths,
             "mean_pace_kph": round(sum(paces) / len(paces), 1) if paces else None,
+            "top_pace_kph": max(paces) if paces else None,
             "next_drill": plan["reason"],
         }
 
     @app.post("/api/drill")
     def make_drill(body: DrillBody) -> dict:
-        if body.session_id:
-            deliveries = _session_or_404(store, body.session_id).get("deliveries") or []
+        batter = "right"
+        if body.series_id:
+            deliveries = [item for item in store.all_deliveries() if (item.get("series") or {}).get("id") == body.series_id]
+            if not deliveries:
+                raise HTTPException(404, "That recording has no balls yet.")
+            batter = deliveries[-1].get("batter", "right")
+        elif body.session_id:
+            session = _session_or_404(store, body.session_id)
+            deliveries = session.get("deliveries") or []
+            batter = session.get("batter", "right")
         else:
-            deliveries = _all_deliveries(store)
+            deliveries = store.all_deliveries()
         plan = drill_plan(deliveries, count=body.count)
         queued = [
-            store.queue_ball(
-                {
-                    "pace_kph": ball["pace_kph"],
-                    "line": ball["line"],
-                    "length": ball["length"],
-                    "note": ball["note"],
-                    "session_id": body.session_id,
-                    "delivery_id": None,
-                }
-            )
+            store.queue_ball({**ball, "batter": batter, "session_id": body.session_id, "delivery_id": None})
             for ball in plan["balls"]
         ]
+        _wake(app)
         return {"reason": plan["reason"], "items": queued}
 
     @app.get("/api/machine")
@@ -385,15 +793,16 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
         return {
             "items": store.machine_items(),
             "bowled": store.bowled_items(),
+            "requests": store.requests(),
             "mode": app.state.machine.mode,
-            "radar": app.state.radar,
+            "radar": dict(app.state.radar),
             "lines": list(LINES),
             "lengths": list(LENGTHS),
         }
 
     @app.post("/api/machine")
     def queue_machine(body: MachineBody) -> dict:
-        line = body.line.strip().lower()
+        line = clean_line(body.line)
         length = body.length.strip().lower()
         if line not in LINES or length not in LENGTHS:
             raise HTTPException(400, "Choose a line and a length from the lists.")
@@ -402,6 +811,8 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
                 "pace_kph": _pace(body.pace_kph),
                 "line": line,
                 "length": length,
+                **target_for(line, length),
+                "batter": _batter(body.batter),
                 "note": body.note.strip()[:200],
                 "session_id": body.session_id,
                 "delivery_id": body.delivery_id,
@@ -411,15 +822,13 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
 
     @app.post("/api/machine/bowl")
     def bowl_next() -> dict:
-        return _bowl_one(store, app.state.machine)
+        return _bowl_one(app, store)
 
     @app.post("/api/machine/bowl-all")
     def bowl_all() -> dict:
         bowled = []
-        while store.machine_items():
-            bowled.append(_bowl_one(store, app.state.machine))
-            if len(bowled) >= 18:
-                break
+        while store.machine_items() and len(bowled) < 18:
+            bowled.append(_bowl_one(app, store))
         return {"bowled": bowled}
 
     @app.delete("/api/machine/{item_id}")
@@ -430,16 +839,219 @@ def create_app(data_dir: Path | None = None) -> FastAPI:
             raise HTTPException(404, "That ball is not in the queue.") from None
         return {"ok": True}
 
+    @app.get("/api/machine/requests")
+    def machine_requests(wait: float = 0.0) -> dict:
+        """For the edge bridge at the nets: balls waiting to be bowled. wait long-polls."""
+        deadline = time.time() + max(0.0, min(wait, 25.0))
+        with app.state.wake:
+            while not store.requests() and time.time() < deadline:
+                app.state.wake.wait(timeout=max(0.0, deadline - time.time()))
+        return {"items": store.requests(), "mode": app.state.machine.mode}
+
+    @app.post("/api/machine/requests/{item_id}")
+    def machine_done(item_id: str, body: DoneBody) -> dict:
+        try:
+            item = store.finish_request(item_id)
+        except KeyError:
+            raise HTTPException(404, "No such request.") from None
+        if not body.ok:
+            store.put_front({k: v for k, v in item.items() if k != "requested"})
+            return {"ok": False, "error": body.error[:300]}
+        record = {**command_for(item), "via": "edge", "bowled_at": now_iso()}
+        store.add_bowled(record)
+        return record
+
+    # -- assessments and certificates ----------------------------------------------
+    #
+    # The coach scores a recorded spell and issues a certificate. The score is
+    # always worked out here, from the cameras' readings, never sent by the
+    # page, and the certificate keeps the score it was issued with.
+
+    @app.get("/api/academy")
+    def get_academy() -> dict:
+        return store.academy()
+
+    @app.put("/api/academy")
+    def put_academy(body: AcademyBody) -> dict:
+        try:
+            academy = {
+                "name": cert.clean_text(body.name, limit=70, what="academy's name"),
+                "city": cert.clean_text(body.city, limit=40, what="city"),
+                "coach": cert.clean_text(body.coach, limit=60, what="coach's name"),
+                "role": cert.clean_text(body.role, limit=40, what="coach's title"),
+            }
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return store.save_academy(academy)
+
+    @app.get("/api/academy/logo")
+    def get_logo() -> FileResponse:
+        if not store.logo_path.exists():
+            raise HTTPException(404, "No logo yet.")
+        return FileResponse(store.logo_path, media_type="image/png")
+
+    @app.post("/api/academy/logo")
+    async def put_logo(logo: UploadFile = File(...)) -> dict:
+        data = await logo.read(MAX_LOGO_BYTES + 1)
+        if len(data) > MAX_LOGO_BYTES:
+            raise HTTPException(413, "Use a logo smaller than 3 MB.")
+        try:
+            cleaned = cert.clean_logo(data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        store.save_logo(cleaned)
+        return store.academy()
+
+    @app.delete("/api/academy/logo")
+    def remove_logo() -> dict:
+        store.save_logo(None)
+        return store.academy()
+
+    @app.post("/api/assess")
+    def assess_spell(body: AssessBody) -> dict:
+        player, source, result = _assessment(store, body, need_player=False)
+        return {"player": player, "source": source, "assessment": result}
+
+    @app.get("/api/certificates")
+    def list_certificates() -> dict:
+        return {"certificates": [_certificate_view(record, zone) for record in store.list_certificates()]}
+
+    @app.post("/api/certificates")
+    def issue_certificate(body: AssessBody) -> dict:
+        academy = store.academy()
+        if not academy["name"] or not academy["coach"]:
+            raise HTTPException(400, "Add the academy's name and the coach's name first, under Academy on the certificates.")
+        player, source, result = _assessment(store, body, need_player=True)
+        if not result["ready"]:
+            raise HTTPException(400, result["why_not"])
+        for record in store.list_certificates():
+            same = (record.get("source") or {}).get("id") == source["id"] and record["player"] == player
+            if same and not record.get("revoked") and record["assessment"]["discipline"] == result["discipline"] \
+                    and record["assessment"]["age_group"] == result["age_group"]:
+                return {**_certificate_view(record, zone), "existing": True}
+        record = store.add_certificate(
+            {
+                "version": 1,
+                "issued": now_iso(),
+                "player": player,
+                "assessment": result,
+                "academy": {field: academy[field] for field in ("name", "city", "coach", "role")},
+                "recorded": source["recorded"],
+                "source": source,
+                "revoked": None,
+            },
+            cert.new_code,
+        )
+        if store.logo_path.exists():
+            shutil.copyfile(store.logo_path, store.certificate_folder(record["id"]) / "logo.png")
+        _render_certificate(store, record, origin=origin, zone=zone)
+        return {**_certificate_view(record, zone), "existing": False}
+
+    @app.post("/api/certificates/{code}/revoke")
+    def revoke_certificate(code: str, body: RevokeBody) -> dict:
+        parsed = cert.parse(code)
+        reason = " ".join(body.reason.split())
+
+        def change(record: dict) -> None:
+            if not record.get("revoked"):
+                record["revoked"] = {"at": now_iso(), "reason": reason}
+
+        try:
+            record = store.update_certificate(parsed or "", change)
+        except KeyError:
+            raise HTTPException(404, "No certificate has that ID.") from None
+        _render_certificate(store, record, origin=origin, zone=zone)
+        return _certificate_view(record, zone)
+
+    @app.delete("/api/certificates/{code}")
+    def delete_certificate(code: str) -> dict:
+        try:
+            store.delete_certificate(cert.parse(code) or "")
+        except KeyError:
+            raise HTTPException(404, "No certificate has that ID.") from None
+        return {"ok": True}
+
+    # -- the pages ----------------------------------------------------------------
+
     @app.get("/")
-    def index() -> FileResponse:
+    def home() -> HTMLResponse:
+        return HTMLResponse(render_home(origin))
+
+    @app.get("/coach")
+    def coach_screen() -> FileResponse:
         return FileResponse(WEB / "index.html")
+
+    @app.get("/coach/")
+    def coach_redirect() -> RedirectResponse:
+        return RedirectResponse("/coach", status_code=307)
 
     @app.get("/favicon.ico")
     def favicon() -> Response:
         return Response(status_code=204)
 
+    # -- the setup guide, open to anyone ---------------------------------------------
+
+    @app.get("/setup")
+    def setup_redirect() -> RedirectResponse:
+        return RedirectResponse("/setup/", status_code=307)
+
+    @app.get("/setup/")
+    def setup_page() -> HTMLResponse:
+        return HTMLResponse(render_guide())
+
+    # -- verifying a certificate, open to anyone -------------------------------------
+
+    @app.get("/verify")
+    def verify_lookup(id: str = "") -> Response:
+        if id.strip():
+            code = cert.parse(id)
+            if code is None:
+                return HTMLResponse(lookup_page(id[:24], "bad"), status_code=400, headers=NOINDEX)
+            return RedirectResponse(f"/verify/{cert.show(code)}", status_code=303)
+        return HTMLResponse(lookup_page())
+
+    @app.get("/verify/{code}")
+    def verify_certificate(code: str) -> Response:
+        parsed = cert.parse(code)
+        if parsed is None:
+            return HTMLResponse(lookup_page(code[:24], "bad"), status_code=404, headers=NOINDEX)
+        if code != cert.show(parsed):
+            return RedirectResponse(f"/verify/{cert.show(parsed)}", status_code=308)
+        try:
+            record = store.certificate(parsed)
+        except KeyError:
+            return HTMLResponse(lookup_page(cert.show(parsed), "missing"), status_code=404, headers=NOINDEX)
+        return HTMLResponse(certificate_page(record, zone=zone), headers=NOINDEX)
+
+    def certificate_file(code: str, kind: str, download: bool) -> FileResponse:
+        parsed = cert.parse(code)
+        try:
+            record = store.certificate(parsed or "")
+        except KeyError:
+            raise HTTPException(404, "No certificate has that ID.") from None
+        path = store.certificate_folder(record["id"]) / f"certificate.{kind}"
+        if not path.exists():
+            _render_certificate(store, record, origin=origin, zone=zone)
+        name = f"VANSH-certificate-{cert.show(record['id'])}.{kind}"
+        return FileResponse(path, media_type="image/png" if kind == "png" else "application/pdf",
+                            filename=name if download else None, headers=NOINDEX)
+
+    @app.get("/verify/{code}/certificate.png")
+    def certificate_png(code: str, download: bool = False) -> FileResponse:
+        return certificate_file(code, "png", download)
+
+    @app.get("/verify/{code}/certificate.pdf")
+    def certificate_pdf(code: str, download: bool = False) -> FileResponse:
+        return certificate_file(code, "pdf", download)
+
+    app.mount("/setup/img", StaticFiles(directory=DOCS / "img"), name="guide-img")
+    app.mount("/fonts", StaticFiles(directory=FONTS), name="fonts")
     app.mount("/assets", StaticFiles(directory=WEB), name="assets")
     return app
+
+
+# ------------------------------------------------------------------------------
+# helpers
 
 
 def _setting(*names: str, default: str | None = None) -> str | None:
@@ -450,98 +1062,253 @@ def _setting(*names: str, default: str | None = None) -> str | None:
     return default
 
 
-def _raw_session(store: Store, clip_name: str, title: str, *, camera: str, cut: bool) -> dict:
-    session = store.create_session(name=title, role="bowling", status="processing")
-    filename = f"{camera}.mp4"
-    path = store.folder(session["id"]) / filename
-    try:
-        item = copy_clip(clip_name, path)
-        session["cameras"][camera] = filename
-        if cut:
-            segments = cut_video(path)
-            session["deliveries"] = [
-                _delivery(index, segment.t0, segment.t1, note=segment.note)
-                for index, segment in enumerate(segments, start=1)
-            ]
-        else:
-            calibration = item["calibration"]
-            session.setdefault("calibration", {"side": None, "behind": None})
-            session["calibration"][camera] = calibration
-            delivery = _delivery(1, 0.0, float(item["duration"]), camera=camera)
-            measured = analyse_clip(path, delivery["t0"], delivery["t1"], calibration)
-            _apply_tracking(delivery, measured)
-            session["deliveries"] = [delivery]
-        session["status"] = "ready"
-    except Exception as exc:
-        session["status"] = "error"
-        session["error"] = str(exc)
-    return store.save(session)
+def _flag(name: str, *, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _record_job(store: Store, session_id: str, side_url: str, behind_url: str | None, seconds: int) -> None:
-    session = store.get(session_id)
-    folder = store.folder(session_id)
-    try:
-        record_rtsp(side_url, folder / "side.mp4", seconds)
-        if behind_url:
-            record_rtsp(behind_url, folder / "behind.mp4", seconds)
-        session["status"] = "processing"
-        store.save(session)
-        segments = cut_video(folder / "side.mp4")
-        session = store.get(session_id)
-        session["deliveries"] = [
-            _delivery(index, segment.t0, segment.t1, note=segment.note)
-            for index, segment in enumerate(segments, start=1)
-        ]
-        session["status"] = "ready"
-        session["error"] = ""
-    except Exception as exc:
-        session = store.get(session_id)
-        session["status"] = "error"
-        session["error"] = str(exc)
-    store.save(session)
+def _public(path: str) -> bool:
+    return path in PUBLIC_API or path.startswith("/api/samples/")
 
 
-def _delivery(
-    index: int,
-    t0: float,
-    t1: float,
-    *,
-    cues: list | None = None,
-    note: str = "",
-    camera: str = "side",
-) -> dict:
+def _signed_in(request: Request, auth: Auth) -> bool:
+    if not auth.required:
+        return True
+    header = request.headers.get("authorization") or ""
+    if header.lower().startswith("bearer ") and auth.check_key(header[7:]):
+        return True
+    return auth.valid(request.cookies.get(COOKIE))
+
+
+CAMERA_FIELDS = {
+    "ok": bool, "recording": bool, "codec": str, "width": int, "height": int, "fps": float, "fps_camera": float,
+    "keyframe_s": float, "kbps": int, "missing_frames": int, "error": str,
+}
+
+
+def _assessment(store: Store, body: AssessBody, *, need_player: bool) -> tuple[str, dict, dict]:
+    """The score analysis for the recording the coach chose, worked out from the cameras' readings."""
+    if body.discipline not in DISCIPLINES:
+        raise HTTPException(400, "Choose pace or spin bowling.")
+    if body.age_group not in AGE_GROUPS:
+        raise HTTPException(400, "Choose an age group from the list.")
+    player = ""
+    if need_player or body.player.strip():
+        try:
+            player = cert.clean_name(body.player)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+    balls, source, busy = _assessment_balls(store, body.source)
+    result = assess(balls, discipline=body.discipline, age_group=body.age_group)
+    if busy:
+        result["ready"] = False
+        result["why_not"] = "VANSH is still tracking this recording. Wait for it to finish, then assess again."
+    return player, source, result
+
+
+def _assessment_balls(store: Store, source: str) -> tuple[list[dict], dict, bool]:
+    """Every ball of a recording (all its takes) or of one session, in the order they were bowled."""
+    kind, _, ident = (source or "").partition(":")
+    if kind == "series" and SERIES_ID.fullmatch(ident):
+        takes = sorted((item for item in store.list_sessions() if (item.get("series") or {}).get("id") == ident),
+                       key=lambda item: item["series"]["take"])
+        sessions = []
+        for take in takes:
+            try:
+                sessions.append(store.get(take["id"]))
+            except KeyError:
+                continue
+        if not sessions:
+            raise HTTPException(404, "That recording has no takes yet.")
+        name = sessions[0]["series"]["name"]
+    elif kind == "session":
+        session = _session_or_404(store, ident)
+        sessions = [session]
+        series = session.get("series")
+        name = f"{series['name']} · take {series['take']}" if series else session["name"]
+    else:
+        raise HTTPException(400, "Choose a recording to assess.")
+    balls = []
+    for session in sessions:
+        for delivery in sorted(session.get("deliveries") or [], key=lambda item: float(item.get("t0") or 0)):
+            balls.append({**delivery, "batter": session.get("batter", "right")})
+    info = {"kind": kind, "id": ident, "name": name, "recorded": sessions[0]["created"],
+            "sessions": [session["id"] for session in sessions]}
+    return balls, info, any(session.get("job") for session in sessions)
+
+
+def _render_certificate(store: Store, record: dict, *, origin: str, zone: str) -> None:
+    """Draw the certificate's picture and PDF next to its record."""
+    import uuid
+
+    folder = store.certificate_folder(record["id"])
+    logo = folder / "logo.png"
+    image = cert.render(record, origin=origin, logo=logo if logo.exists() else None, zone=zone)
+    for name, data in (("certificate.png", cert.png_bytes(image)), ("certificate.pdf", cert.pdf_bytes(image, record))):
+        temporary = folder / f".{name}.{uuid.uuid4().hex[:6]}.tmp"
+        temporary.write_bytes(data)
+        temporary.replace(folder / name)
+
+
+def _certificate_view(record: dict, zone: str) -> dict:
+    code = cert.show(record["id"])
+    result = record["assessment"]
+    source = record.get("source") or {}
     return {
-        "id": f"d{index}",
-        "index": index,
-        "t0": t0,
-        "t1": t1,
-        "camera": camera,
-        "cut_note": note,
-        "cues": cues or [],
-        "pitch": None,
-        "pace_kph": None,
-        "pose_note": "",
-        "outcome": None,
-        "tracking": None,
+        "id": record["id"],
+        "code": code,
+        "player": record["player"],
+        "discipline": result["discipline"],
+        "discipline_name": result["discipline_name"],
+        "age_group": result["age_group"],
+        "age_group_name": result["age_group_name"],
+        "score": result["score"],
+        "level": result["level"],
+        "level_name": result["level_name"],
+        "issued": record["issued"],
+        "issued_on": cert.local_date(record["issued"], zone),
+        "recorded": record.get("recorded"),
+        "revoked": record.get("revoked"),
+        "source": {"kind": source.get("kind"), "id": source.get("id"), "name": source.get("name")},
+        "url": f"/verify/{code}",
+        "png": f"/verify/{code}/certificate.png",
+        "pdf": f"/verify/{code}/certificate.pdf",
     }
 
 
-def _apply_tracking(delivery: dict, measured: dict) -> None:
-    delivery["tracking"] = measured
-    if measured.get("pace_kph") is not None and delivery.get("pace_kph") is None:
-        delivery["pace_kph"] = measured["pace_kph"]
-    if measured.get("pitch") and delivery.get("pitch") is None:
-        delivery["pitch"] = measured["pitch"]
-    if measured.get("hit_stumps") and not delivery.get("outcome"):
-        delivery["outcome"] = "hit"
+def _camera_reports(cameras: dict) -> dict:
+    """Keep the known, plain fields of what the bridge says about each camera."""
+    reports = {}
+    for name in ("side", "behind"):
+        value = cameras.get(name) if isinstance(cameras, dict) else None
+        if not isinstance(value, dict):
+            continue
+        report = {}
+        for key, kind in CAMERA_FIELDS.items():
+            item = value.get(key)
+            if item is None:
+                continue
+            try:
+                report[key] = redact(str(item))[:400] if kind is str else kind(item)
+            except (TypeError, ValueError):
+                continue
+        warnings = value.get("warnings")
+        if isinstance(warnings, list):
+            report["warnings"] = [redact(str(item))[:300] for item in warnings[:8]]
+        reports[name] = report
+    return reports
 
 
-def _bowl_one(store: Store, machine: MachineLink) -> dict:
+def _nets_view(nets: dict) -> dict:
+    edge = nets.get("edge") or None
+    seen_ago = None
+    if edge and edge.get("seen"):
+        try:
+            seen_ago = max(0.0, time.time() - datetime.fromisoformat(edge["seen"]).timestamp())
+        except ValueError:
+            seen_ago = None
+    return {
+        "version": nets.get("version", 0),
+        "recording": nets.get("recording"),
+        "recent": nets.get("recent") or [],
+        "edge": edge,
+        "online": seen_ago is not None and seen_ago < ONLINE_S,
+        "seen_ago_s": round(seen_ago) if seen_ago is not None else None,
+        "check": nets.get("check"),
+    }
+
+
+def _mark_seen(nets: dict) -> None:
+    edge = nets.get("edge") or {}
+    edge["seen"] = now_iso()
+    nets["edge"] = edge
+
+
+def _finish_recording(nets: dict, recording: dict) -> None:
+    recording["state"] = "stopped"
+    recording["stopped"] = now_iso()
+    recent = [item for item in nets.get("recent") or [] if item.get("id") != recording["id"]]
+    nets["recent"] = [dict(recording), *recent][:12]
+
+
+def _count_take(store: Store, series: dict) -> None:
+    def change(nets: dict) -> None:
+        for recording in [nets.get("recording"), *(nets.get("recent") or [])]:
+            if recording and recording.get("id") == series["id"]:
+                recording["takes"] = max(int(recording.get("takes") or 0), int(series["take"]))
+                recording["last_take"] = now_iso()
+
+    store.update_nets(change)
+
+
+def _wake(app: FastAPI) -> None:
+    with app.state.wake:
+        app.state.wake.notify_all()
+
+
+def _record_job(store: Store, session_id: str, side_url: str, behind_url: str | None, seconds: int) -> None:
+    from crickcoach.video import record_cameras
+
+    folder = store.folder(session_id)
+    cameras = {"side": (side_url, folder / "side.mp4")}
+    if behind_url:
+        cameras["behind"] = (behind_url, folder / "behind.mp4")
+    try:
+        failures = record_cameras(cameras, seconds)
+    except Exception as exc:
+        message = str(exc)[:400]
+
+        def failed(session: dict) -> None:
+            session["status"] = "error"
+            session["error"] = message
+
+        store.update(session_id, failed)
+        return
+
+    def recorded(session: dict) -> None:
+        for camera in failures:
+            session["cameras"][camera] = None
+        if failures:
+            session["error"] = " ".join(f"{camera}: {text}" for camera, text in failures.items())[:400]
+
+    store.update(session_id, recorded)
+    submit(store, session_id, "find")
+
+
+def _blank_delivery(index: int, t0: float, t1: float, *, camera: str = "side") -> dict:
+    return {
+        "id": f"d{index}",
+        "index": index,
+        "t0": round(float(t0), 3),
+        "t1": round(float(t1), 3),
+        "camera": camera,
+        "cut_note": "",
+        "cues": [],
+        "pose_note": "",
+        "tracks": {},
+        "tracking": None,
+        "pitch": None,
+        "pitch_source": None,
+        "pace_kph": None,
+        "pace_source": None,
+        "stumps": None,
+        "confidence": None,
+        "outcome": None,
+    }
+
+
+def _bowl_one(app: FastAPI, store: Store) -> dict:
+    machine: MachineLink = app.state.machine
     try:
         item = store.take_next_ball()
     except KeyError:
         raise HTTPException(400, "The queue is empty.") from None
+    if machine.is_edge:
+        store.add_request(item)
+        _wake(app)
+        return {**command_for(item), "via": "edge", "status": "sent to the nets"}
     try:
         record = machine.bowl(item)
     except RuntimeError as exc:
@@ -552,20 +1319,29 @@ def _bowl_one(store: Store, machine: MachineLink) -> dict:
 
 
 def _calibration(camera: str, body: CalibrationBody) -> dict:
-    if camera == "side" or body.kind == "side":
-        if not body.bowling or not body.batting:
-            raise HTTPException(400, "Click the bowling crease and the batting crease.")
-        saved = {
-            "kind": "side",
-            "bowling": _point(body.bowling, "the bowling crease"),
-            "batting": _point(body.batting, "the batting crease"),
-            "stump_top": _point(body.stump_top, "the top of the stumps") if body.stump_top else None,
-        }
+    if camera == "side":
+        saved = {"kind": "side"}
+        for key in SIDE_KEYS:
+            value = getattr(body, key)
+            if not value:
+                raise HTTPException(400, "Click the base and the top of the stumps at both ends.")
+            saved[key] = _point(value, key.replace("_", " "))
+        if body.distance_m:
+            saved["distance_m"] = round(float(body.distance_m), 2)
+        try:
+            side_plane(saved, 1000, 1000)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
         return saved
     corners = body.corners or []
     if len(corners) != 4:
-        raise HTTPException(400, "Click the four corners of the pitch.")
-    return {"kind": "behind", "corners": [_point(corner, "a corner") for corner in corners]}
+        raise HTTPException(400, "Click the four crease corners.")
+    saved = {"kind": "behind", "corners": [_point(corner, "a crease corner") for corner in corners]}
+    try:
+        ground_plane(saved, 1000, 1000)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return saved
 
 
 def _point(value: dict, name: str) -> dict:
@@ -576,18 +1352,7 @@ def _point(value: dict, name: str) -> dict:
         raise HTTPException(400, f"Need a click for {name}.") from None
     if not 0 <= x <= 1 or not 0 <= y <= 1:
         raise HTTPException(400, f"The click for {name} is outside the picture.")
-    return {"x": round(x, 4), "y": round(y, 4)}
-
-
-def _all_deliveries(store: Store) -> list[dict]:
-    found = []
-    for summary in store.list_sessions():
-        try:
-            session = store.get(summary["id"])
-        except KeyError:
-            continue
-        found.extend(session.get("deliveries") or [])
-    return found
+    return {"x": round(x, 5), "y": round(y, 5)}
 
 
 def _role(role: str) -> str:
@@ -597,11 +1362,25 @@ def _role(role: str) -> str:
     return role
 
 
-def _rtsp(url: str) -> str:
+def _batter(value: str | None) -> str:
+    return "left" if (value or "").strip().lower() == "left" else "right"
+
+
+def _rtsp(url: str, allow_private: bool) -> str:
     cleaned = (url or "").strip()
     parts = urlsplit(cleaned)
     if parts.scheme not in {"rtsp", "rtsps"} or not parts.hostname:
         raise HTTPException(400, "Camera address must start with rtsp:// and include a host.")
+    try:
+        infos = socket.getaddrinfo(parts.hostname, parts.port or 554, proto=socket.IPPROTO_TCP)
+    except (socket.gaierror, UnicodeError):
+        raise HTTPException(400, "That camera address does not resolve.") from None
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0])
+        if address.is_loopback or address.is_link_local or address.is_multicast or address.is_unspecified:
+            raise HTTPException(400, "That camera address points at this server.")
+        if address.is_private and not allow_private:
+            raise HTTPException(400, "This server does not reach into private networks.")
     return cleaned
 
 
@@ -620,15 +1399,33 @@ def _session_or_404(store: Store, session_id: str) -> dict:
         raise HTTPException(404, "Session not found.") from None
 
 
-def _delivery_or_404(session: dict, delivery_id: str) -> dict:
+def _update_or_404(store: Store, session_id: str, change):
+    try:
+        return store.update(session_id, change)
+    except KeyError:
+        raise HTTPException(404, "Not found.") from None
+
+
+def _check_delivery(delivery_id: str) -> None:
     try:
         check_delivery_id(delivery_id)
     except KeyError:
         raise HTTPException(404, "Delivery not found.") from None
+
+
+def _find_delivery(session: dict, delivery_id: str) -> dict:
+    check_delivery_id(delivery_id)
     for delivery in session.get("deliveries") or []:
         if delivery["id"] == delivery_id:
             return delivery
-    raise HTTPException(404, "Delivery not found.")
+    raise KeyError(delivery_id)
+
+
+def _find_delivery_or_404(session: dict, delivery_id: str) -> dict:
+    try:
+        return _find_delivery(session, delivery_id)
+    except KeyError:
+        raise HTTPException(404, "Delivery not found.") from None
 
 
 async def _save_upload(upload: UploadFile, folder: Path, stem: str) -> str:
@@ -637,7 +1434,7 @@ async def _save_upload(upload: UploadFile, folder: Path, stem: str) -> str:
         suffix = ".mp4"
     content_type = (upload.content_type or "").lower()
     if content_type.startswith("image/"):
-        raise HTTPException(400, "Upload a video from the side camera.")
+        raise HTTPException(400, "Upload a video, not a picture.")
     destination = folder / f"{stem}{suffix}"
     total = 0
     try:
@@ -648,7 +1445,7 @@ async def _save_upload(upload: UploadFile, folder: Path, stem: str) -> str:
                     break
                 total += len(chunk)
                 if total > MAX_BYTES:
-                    raise HTTPException(413, "Video is over 250 MB.")
+                    raise HTTPException(413, "Video is over 600 MB. Send shorter takes.")
                 handle.write(chunk)
     except HTTPException:
         destination.unlink(missing_ok=True)

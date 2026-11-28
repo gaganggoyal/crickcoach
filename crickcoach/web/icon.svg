@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <radialGradient id="leather" cx="0.36" cy="0.3" r="0.8">
+      <stop offset="0" stop-color="#e2604f"/>
+      <stop offset="0.65" stop-color="#b02820"/>
+      <stop offset="1" stop-color="#761810"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="30" fill="url(#leather)"/>
+  <path d="M21 4.5c11 11 11 44 0 55M27.5 2.6c11.5 12 11.5 46.8 0 58.8" fill="none" stroke="#f4ecd8" stroke-width="2.6" stroke-linecap="round"/>
+</svg>
