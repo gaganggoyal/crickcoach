@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 
+from crickcoach import ORIGIN, site
 from crickcoach.assess import AGE_GROUPS, DISCIPLINES, LENGTH_SPREAD_M, LEVELS, LINE_SPREAD_M, MIN_MEASURED
 from crickcoach.certificate import local_date, show
 
@@ -20,12 +21,7 @@ PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title} · VANSH</title>
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <meta name="description" content="Check a VANSH bowling certificate: who it was issued to, the score, and whether it still stands.">
-  {robots}
-  <link rel="stylesheet" href="/assets/app.css">
-  <link rel="stylesheet" href="/assets/verify.css">
+{head}
 </head>
 <body class="verify-page">
   <header>
@@ -49,14 +45,15 @@ PAGE = """<!DOCTYPE html>
 </html>
 """
 
-NOINDEX = '<meta name="robots" content="noindex, nofollow">'
+LOOKUP_DESCRIPTION = ("Check a VANSH bowling certificate by its ID: who it was issued to, the score, "
+                      "and whether it still stands.")
 
 
 def _e(value) -> str:
     return html.escape(str(value if value is not None else ""), quote=True)
 
 
-def lookup_page(value: str = "", problem: str | None = None) -> str:
+def lookup_page(value: str = "", problem: str | None = None, *, origin: str = ORIGIN) -> str:
     """The form, with what went wrong when a lookup failed."""
     message = ""
     if problem == "bad":
@@ -75,10 +72,13 @@ def lookup_page(value: str = "", problem: str | None = None) -> str:
       {_form(value)}
     </section>
 {rules_section()}"""
-    return PAGE.format(title="Verify a certificate", robots=NOINDEX if problem else "", body=body)
+    head = site.head(title="Verify a certificate · VANSH", description=LOOKUP_DESCRIPTION, origin=origin,
+                     path="/verify", index=not problem, styles=("app.css", "verify.css"), serif=True,
+                     extra="" if problem else site.json_ld(site.breadcrumbs(origin, ("Verify a certificate", "/verify"))))
+    return PAGE.format(head=head, body=body)
 
 
-def certificate_page(record: dict, *, zone: str = "Asia/Kolkata") -> str:
+def certificate_page(record: dict, *, zone: str = "Asia/Kolkata", origin: str = ORIGIN) -> str:
     code = show(record["id"])
     academy = record.get("academy") or {}
     result = record["assessment"]
@@ -135,7 +135,16 @@ def certificate_page(record: dict, *, zone: str = "Asia/Kolkata") -> str:
       {_form("")}
     </section>
 {rules_section()}"""
-    return PAGE.format(title=f"Certificate {code}", robots=NOINDEX, body=body)
+    # A shared link shows the certificate itself. The page is never indexed: it names a player.
+    if revoked:
+        description = f"This VANSH certificate, {code}, was revoked and no longer stands."
+    else:
+        description = (f"{record['player']} scored {result['score']} out of 100, Level {result['level']} "
+                       f"{result['level_name']}, in a VANSH {result['discipline_name'].lower()} assessment.")
+    image = (f"{origin.rstrip('/')}{base}.png", 2000, 1414, f"The VANSH certificate {code}")
+    head = site.head(title=f"Certificate {code} · VANSH", description=description, origin=origin,
+                     path=f"/verify/{code}", index=False, styles=("app.css", "verify.css"), serif=True, image=image)
+    return PAGE.format(head=head, body=body)
 
 
 def _form(value: str) -> str:

@@ -25,9 +25,13 @@ if (calm.matches || !("IntersectionObserver" in window)) {
   });
 }
 
-// The ball in the hero.
+// The ball in the hero starts once the page has loaded, so it never slows the first paint.
 const stage = document.querySelector(".stage[data-flight]");
-if (stage && !calm.matches) play(stage);
+if (stage && !calm.matches) {
+  const soon = (task) => ("requestIdleCallback" in window ? window.requestIdleCallback(task, { timeout: 1500 }) : window.setTimeout(task, 300));
+  if (document.readyState === "complete") soon(() => play(stage));
+  else window.addEventListener("load", () => soon(() => play(stage)), { once: true });
+}
 
 function play(stage) {
   const { frames, bounce } = JSON.parse(stage.dataset.flight);
@@ -50,6 +54,8 @@ function play(stage) {
   let started = null;
   let running = false;
   let lastStep = -1;
+  let lastIndex = -1;
+  let lastFade = "1";
 
   function place(frame) {
     const [x, y, r, sx, sy] = frame;
@@ -81,18 +87,27 @@ function play(stage) {
     if (started === null) started = now;
     const t = ((now - started) / 1000) % LOOP;
     const index = frameAt(t);
-    place(frames[index]);
+    // Touch the drawing only when the ball has moved to a new frame.
+    if (index !== lastIndex) {
+      lastIndex = index;
+      place(frames[index]);
+      const flown = upTo(Math.min(index, bounce));
+      trail.setAttribute("points", flown);
+      glow.setAttribute("points", flown);
+      path.setAttribute("points", index > bounce ? frames.slice(bounce, index + 1).map(point).join(" ") : "");
+    }
     const flying = t < BEFORE + AFTER;
-    trail.setAttribute("points", upTo(Math.min(index, bounce)));
-    glow.setAttribute("points", upTo(Math.min(index, bounce)));
-    path.setAttribute("points", index > bounce ? frames.slice(bounce, index + 1).map(point).join(" ") : "");
     let step = 3;
     if (t >= LOOP - FADE) step = -1;
     else if (t < BEFORE * 0.45) step = 0;
     else if (t < BEFORE) step = 1;
     else if (flying) step = 2;
     if (step !== lastStep) show(step);
-    stage.style.setProperty("--fade", t > LOOP - FADE ? String(1 - (t - (LOOP - FADE)) / FADE) : "1");
+    const fade = t > LOOP - FADE ? (1 - (t - (LOOP - FADE)) / FADE).toFixed(2) : "1";
+    if (fade !== lastFade) {
+      lastFade = fade;
+      stage.style.setProperty("--fade", fade);
+    }
     requestAnimationFrame(tick);
   }
 
@@ -100,6 +115,7 @@ function play(stage) {
     if (running) return;
     running = true;
     started = null;
+    lastIndex = -1;
     stage.classList.add("playing");
     requestAnimationFrame(tick);
   }

@@ -14,11 +14,15 @@ import html
 import json
 import math
 
+from crickcoach import site
 from crickcoach.assess import assess
 from crickcoach.pitch import LENGTH_WORDS, describe
 from crickcoach.verify import BANDS, pitch_svg
 
 REPO = "https://github.com/gaganggoyal/crickcoach"
+TITLE = "VANSH, the robo coach for cricket nets"
+DESCRIPTION = ("VANSH, the robo coach for cricket nets: CCTV ball tracking that measures every ball's "
+               "speed, length and line, reads the bowling action and queues the next drill.")
 
 PITCH_M = 20.12  # stumps to stumps
 HALF_WIDTH_M = 1.525  # the pitch is 3.05 m wide
@@ -43,6 +47,8 @@ HERO = 6
 # pitch and 8 m up, so the whole net and the ball's drop are in view.
 HERO_W, HERO_H = 1200, 392
 HERO_CAMERA = {"at": (20.0, 10.0, 11.4), "look": (0.0, 10.06, 0.35), "focal": 1150.0, "centre": (600.0, 228.0)}
+CERTIFICATE_ALT = ("A sample VANSH certificate, stamped SAMPLE: the academy, the player, a score out of 100 with a level, "
+                   "four measured numbers, the coach's name, the date, and an ID with a QR code.")
 BALL_DRAWN_M = 0.10  # the ball is drawn about three times its size so it can be seen
 
 
@@ -136,7 +142,6 @@ def _hero() -> dict:
         '<linearGradient id="turf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#21402a"/><stop offset="1" stop-color="#16301e"/></linearGradient>'
         '<linearGradient id="strip" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#a48b5a"/><stop offset="0.5" stop-color="#c2a56c"/><stop offset="1" stop-color="#a48b5a"/></linearGradient>'
         '<radialGradient id="ballshade" cx="0.35" cy="0.32" r="0.75"><stop offset="0" stop-color="#ffffff"/><stop offset="0.6" stop-color="#f1e9d6"/><stop offset="1" stop-color="#c9bfa8"/></radialGradient>'
-        '<filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="4"/></filter>'
         '</defs>',
     ]
     # The net's far wall, then the turf, the strip and the length bands.
@@ -184,7 +189,7 @@ def _hero() -> dict:
     # The flight: its shadow on the pitch, the measured part and the projected part.
     whole = before + after
     parts.append(f'<polyline class="trace-shadow" points="{cam.points([(x, y, 0) for x, y, _ in before])}" fill="none"/>')
-    parts.append(f'<polyline id="hero-trail-glow" class="trail-glow" points="{cam.points(before)}" fill="none" filter="url(#glow)"/>')
+    parts.append(f'<polyline id="hero-trail-glow" class="trail-glow" points="{cam.points(before)}" fill="none"/>')
     parts.append(f'<polyline id="hero-trail" class="trail" points="{cam.points(before)}" fill="none"/>')
     parts.append(f'<polyline id="hero-path" class="projected" points="{cam.points([before[-1]] + after)}" fill="none"/>')
     bx, by, _ = cam(before[-1])
@@ -314,10 +319,15 @@ def render(origin: str = "https://vansh.best") -> str:
     length_words = LENGTH_WORDS[mark["length"]]
     line_words = mark["line"].capitalize()
     stats = result["stats"]
-    canonical = origin.rstrip("/") + "/"
+    home_url = origin.rstrip("/") + "/"
+    website = {"@context": "https://schema.org", "@type": "WebSite", "name": site.NAME,
+               "alternateName": [site.FULL_NAME, "vansh.best"], "url": home_url, "inLanguage": "en"}
+    head = site.head(title=TITLE, description=DESCRIPTION, origin=origin, path="/",
+                     styles=("app.css", "home.css"), scripts=("home.js",), serif=True, extra=site.json_ld(website))
     return PAGE.format(
-        canonical=_e(canonical),
-        og_image=_e(canonical + "assets/og.jpg"),
+        head=head,
+        certificate=site.picture("certificate-sample.jpg", CERTIFICATE_ALT,
+                                 sizes="(max-width: 1080px) calc(100vw - 44px), 560px"),
         hero_svg=hero["svg"],
         flight=hero["flight"],
         at_release=hero["release"],
@@ -347,24 +357,7 @@ PAGE = """<!DOCTYPE html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VANSH, the robo coach for cricket nets</title>
-  <meta name="description" content="VANSH is a robo coach for cricket nets. Two CCTV cameras watch the net, and VANSH measures every ball's pace, length and line, reads the bowling action and sends the next drill to the bowling machine.">
-  <link rel="canonical" href="{canonical}">
-  <meta property="og:type" content="website">
-  <meta property="og:site_name" content="VANSH">
-  <meta property="og:title" content="VANSH, the robo coach for cricket nets">
-  <meta property="og:description" content="Two CCTV cameras watch the net. VANSH measures every ball's pace, length and line, and sends the next drill to the bowling machine.">
-  <meta property="og:url" content="{canonical}">
-  <meta property="og:image" content="{og_image}">
-  <meta property="og:image:width" content="1200">
-  <meta property="og:image:height" content="630">
-  <meta name="twitter:card" content="summary_large_image">
-  <meta name="theme-color" content="#12170f">
-  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
-  <link rel="preload" href="/fonts/DMSerifDisplay-Regular.ttf" as="font" type="font/ttf" crossorigin>
-  <link rel="stylesheet" href="/assets/app.css">
-  <link rel="stylesheet" href="/assets/home.css">
-  <script type="module" src="/assets/home.js"></script>
+{head}
 </head>
 <body class="home-page">
   <header class="site-head">
@@ -567,7 +560,7 @@ PAGE = """<!DOCTYPE html>
           <p class="actions"><a class="btn ghost" href="/verify">Verify a certificate</a></p>
         </div>
         <figure class="cert reveal">
-          <img src="/setup/img/certificate-sample.jpg" width="1400" height="990" loading="lazy" decoding="async" alt="A sample VANSH certificate, stamped SAMPLE: the academy, the player, a score out of 100 with a level, four measured numbers, the coach's name, the date, and an ID with a QR code.">
+          {certificate}
         </figure>
       </div>
     </section>

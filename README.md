@@ -196,6 +196,16 @@ The score out of 100 gives a level: Starter, Developing (40), Club (55), Advance
 
 The verify pages are open to anyone, ask search engines not to index them, and show nothing from the sessions or the video. The rules above are also explained on the verify page itself, from the same code that scores.
 
+## The website
+
+vansh.best serves four public pages: the homepage at `/`, the coach screen at `/coach`, the setup guide at `/setup/` and the certificate check at `/verify`.
+
+- **Search engines** read `/robots.txt` and `/sitemap.xml`. Every page has a canonical address, a description and a preview for sharing. The homepage and the guide carry structured data. Certificates stay out of the sitemap and are marked `noindex`, because they name players.
+- **Phones.** `/manifest.webmanifest` lets a coach add the coach screen to a phone's home screen. The guide serves smaller WebP copies of its pictures, and the pose model loads only when the live camera starts.
+- **Caching.** Pages ask for files with a content hash, such as `app.css?v=…`, and those files are kept for a year. A new version gets a new address.
+
+To get vansh.best into Google, add the site in Google Search Console and submit `https://vansh.best/sitemap.xml`.
+
 ## Deploy to a server
 
 `deploy/vps.sh` puts VANSH on a Linux server where Caddy, running in Docker, serves the sites.
@@ -224,7 +234,7 @@ ssh root@your-server cat /etc/vansh/vansh.env
 PYTHONPATH=. .venv/bin/python -m unittest discover -s tests
 ```
 
-The 114 tests take about a minute. They cover the physics, the measurement, the raw reels end to end, the API with and without a coach key, recording at the nets through the bridge, the machine in all three modes, the bridge's safeguards, and the assessments: the scoring rules, the certificate's QR code and PDF, and issuing, checking, revoking and deleting through the API, and the homepage: its drawing, its example spell and its links. They pass on Python 3.12, the VPS's version, and on 3.15.
+The 125 tests take about a minute. They cover the physics, the measurement, the raw reels end to end, the API with and without a coach key, recording at the nets through the bridge, the machine in all three modes, the bridge's safeguards, and the assessments: the scoring rules, the certificate's QR code and PDF, and issuing, checking, revoking and deleting through the API, the homepage's drawing, example spell and links, and what search engines and phones read: the sitemap, robots.txt, each page's head, the manifest, caching and pictures. They pass on Python 3.12, the VPS's version, and on 3.15.
 
 To render new reels:
 
